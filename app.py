@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 import mplfinance as mpf
 from matplotlib.patches import Rectangle
 import io
+import gc
 
-st.set_page_config(page_title="Crypto Bot Otimizado", layout="wide")
+st.set_page_config(page_title="Crypto Bot Top 250", layout="wide")
 
 st.markdown("""
     <style>
@@ -25,7 +26,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto Signal Bot (Otimizado 24/7)")
+st.title("⚡ Crypto Signal Bot (Top 250 & Gráficos Otimizados)")
 
 if 'sinais_enviados' not in st.session_state:
     st.session_state.sinais_enviados = set()
@@ -43,6 +44,7 @@ st.sidebar.markdown("---")
 timeframe_escolhido = st.sidebar.selectbox("Timeframe", ['1h', '2h', '4h'], index=2)
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
+    """Gera o gráfico de velas otimizado para poupar RAM"""
     subset_df = df.copy()
     subset_df['timestamp'] = pd.to_datetime(subset_df['timestamp'], unit='ms')
     subset_df.set_index('timestamp', inplace=True)
@@ -50,7 +52,7 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     mc = mpf.make_marketcolors(up='#4caf50', down='#ff5252', edge='inherit', wick='inherit', volume='inherit')
     s = mpf.make_mpf_style(marketcolors=mc, facecolor='#1e1e24', edgecolor='none', gridstyle='none')
     
-    fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(6, 2.5), axisoff=True, returnfig=True)
+    fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(5, 2), axisoff=True, returnfig=True)
     ax = axes[0]
     
     total_velas = len(subset_df)
@@ -72,9 +74,13 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     ax.axhline(tp_price, color='#4caf50', linestyle=':', linewidth=1, alpha=0.9, zorder=4)
     
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=150)
+    fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=100)
     buf.seek(0)
+    
     plt.close(fig)
+    plt.close('all')
+    gc.collect()
+    
     return buf
 
 def enviar_alerta_telegram_com_foto(token, chat_id, caption, foto_bytes):
@@ -107,19 +113,23 @@ def calcular_rsi(closes, period=14):
         rsi[i] = 100. - 100./(1. + rs)
     return rsi
 
-# Função com cache de 5 minutos (TTL = 300 segundos) para proteger a API da Binance
 @st.cache_data(ttl=300, show_spinner=False)
 def analisar_mercado(tf):
     exchange = ccxt.binance({'enableRateLimit': True})
     exchange.load_markets()
     tickers = exchange.fetch_tickers()
     
-    symbols = []
+    # Filtrar e ordenar por volume (Top 250 moedas com maior liquidez/tamanho)
+    pairs_volume = []
     for symbol, ticker in tickers.items():
         if '/USDT' in symbol and not 'UP/' in symbol and not 'DOWN/' in symbol:
             quote_vol = ticker.get('quoteVolume', 0)
-            if quote_vol and quote_vol > 5000000:
-                symbols.append(symbol)
+            if quote_vol and quote_vol > 5000000: # Filtro base de volume mínimo
+                pairs_volume.append((symbol, quote_vol))
+                
+    # Ordenar do maior para o menor volume e selecionar os top 250
+    pairs_volume.sort(key=lambda x: x[1], reverse=True)
+    symbols = [item[0] for item in pairs_volume[:250]]
 
     total_sinais = 0
     vitorias = 0
@@ -128,9 +138,9 @@ def analisar_mercado(tf):
     sinais_registados = []
     alertas_para_enviar = []
 
-    for symbol in symbols[:15]: # Limitado a 15 pares para máxima velocidade e estabilidade
+    for symbol in symbols:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=60)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
             if len(ohlcv) < 30:
                 continue
                 
@@ -196,11 +206,10 @@ def analisar_mercado(tf):
 
     return total_sinais, vitorias, perdas, em_andamento, sinais_registados, alertas_para_enviar
 
-with st.spinner(f"A executar scan automático ({timeframe_escolhido}) | Otimizado..."):
+with st.spinner(f"A vasculhar o Top 250 do mercado ({timeframe_escolhido})..."):
     try:
         total_sinais, vitorias, perdas, em_andamento, sinais_registados, alertas_para_enviar = analisar_mercado(timeframe_escolhido)
 
-        # Enviar para o Telegram controlando duplicados na sessão
         if enviar_telegram:
             for signal_id, caption, foto_bytes in alertas_para_enviar:
                 if signal_id not in st.session_state.sinais_enviados:
