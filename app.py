@@ -28,7 +28,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto Signal Bot (Top 250 & Ultra-Leve)")
+st.title("⚡ Crypto Signal Bot (Top 250 & Correção Telegram)")
 
 SENT_FILE = "sent_signals.json"
 
@@ -72,7 +72,6 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     mc = mpf.make_marketcolors(up='#4caf50', down='#ff5252', edge='inherit', wick='inherit', volume='inherit')
     s = mpf.make_mpf_style(marketcolors=mc, facecolor='#1e1e24', edgecolor='none', gridstyle='none')
     
-    # Gráfico com tamanho mínimo e DPI 72 para consumo de RAM quase nulo
     fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(3.5, 1.5), axisoff=True, returnfig=True)
     ax = axes[0]
     
@@ -98,11 +97,14 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=72)
     buf.seek(0)
     
+    # Retornar os bytes puros garante que a imagem não corrompe se for reenviada
+    image_bytes = buf.getvalue()
+    
     plt.close(fig)
     plt.close('all')
     gc.collect()
     
-    return buf
+    return image_bytes
 
 def enviar_alerta_telegram_com_foto(token, chat_id, caption, foto_bytes):
     if not token or not chat_id:
@@ -249,7 +251,7 @@ with st.spinner(f"A vasculhar o Top 250 ({timeframe_escolhido})..."):
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
                         if sucesso:
-                            st.success(f"✅ Alerta de teste enviado para {s['moeda']}!")
+                            st.success(f"✅ Alerta de teste enviado para {s['moeda']} no Telegram!")
                         else:
                             st.error(f"❌ Falha no Telegram para {s['moeda']}: {msg}")
             else:
