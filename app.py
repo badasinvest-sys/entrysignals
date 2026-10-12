@@ -28,9 +28,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto Signal Bot (Top 250 & Automático 24/7)")
+st.title("⚡ Crypto Signal Bot (Top 250 & Ultra-Leve)")
 
-# Ficheiro local para persistir os sinais enviados entre pings do UptimeRobot
 SENT_FILE = "sent_signals.json"
 
 def carregar_sinais_enviados():
@@ -51,19 +50,14 @@ def guardar_sinal_enviado(signal_id):
     except Exception as e:
         print(f"Erro ao guardar sinal: {e}")
 
-def limpar_sinais_enviados():
-    if os.path.exists(SENT_FILE):
-        os.remove(SENT_FILE)
-
 st.sidebar.header("⚙️ Configurações do Telegram")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", type="password", placeholder="Ex: 123456:ABC...")
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", placeholder="Ex: 987654321")
 enviar_telegram = st.sidebar.checkbox("Ativar Alertas Automáticos", value=True)
 
-# Botão de teste: envia apenas os alertas das últimas 2 trades
 if st.sidebar.button("🔄 Reenviar Alertas para Teste (Últimas 2)"):
     st.session_state.forcar_teste = True
-    st.sidebar.success("Modo de teste ativado para as últimas 2 trades!")
+    st.sidebar.success("Modo de teste ativado!")
 else:
     st.session_state.forcar_teste = False
 
@@ -78,11 +72,12 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     mc = mpf.make_marketcolors(up='#4caf50', down='#ff5252', edge='inherit', wick='inherit', volume='inherit')
     s = mpf.make_mpf_style(marketcolors=mc, facecolor='#1e1e24', edgecolor='none', gridstyle='none')
     
-    fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(5, 2), axisoff=True, returnfig=True)
+    # Gráfico com tamanho mínimo e DPI 72 para consumo de RAM quase nulo
+    fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(3.5, 1.5), axisoff=True, returnfig=True)
     ax = axes[0]
     
     total_velas = len(subset_df)
-    largura_caixa = min(12, total_velas)
+    largura_caixa = min(10, total_velas)
     x_inicio = total_velas - largura_caixa
     
     altura_risco = entry_price - sl_price
@@ -100,7 +95,7 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     ax.axhline(tp_price, color='#4caf50', linestyle=':', linewidth=1, alpha=0.9, zorder=4)
     
     buf = io.BytesIO()
-    fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=100)
+    fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=72)
     buf.seek(0)
     
     plt.close(fig)
@@ -111,16 +106,18 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
 
 def enviar_alerta_telegram_com_foto(token, chat_id, caption, foto_bytes):
     if not token or not chat_id:
-        return False
+        return False, "Token ou Chat ID em falta."
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     files = {'photo': ('chart.png', foto_bytes, 'image/png')}
     data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
     try:
-        response = requests.post(url, data=data, files=files, timeout=10)
-        return response.status_code == 200
+        response = requests.post(url, data=data, files=files, timeout=15)
+        if response.status_code == 200:
+            return True, "Sucesso"
+        else:
+            return False, f"Erro Telegram ({response.status_code}): {response.text}"
     except Exception as e:
-        print(f"Erro ao enviar para o Telegram: {e}")
-        return False
+        return False, f"Exceção de rede: {e}"
 
 def calcular_rsi(closes, period=14):
     deltas = np.diff(closes)
@@ -210,7 +207,6 @@ def analisar_mercado(tf):
                     
                     signal_id = f"{nome_moeda}_{tf}_{signal_time}"
                     
-                    # Gerar gráfico apenas se for recente para poupar RAM
                     foto_bytes = None
                     if horas_atras <= 24:
                         foto_bytes = gerar_grafico_mini(df.iloc[:i+1], entry_price, sl_price, tp_price, status)
@@ -228,44 +224,46 @@ def analisar_mercado(tf):
         except:
             continue
 
-    # Ordenar por mais recente
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return total_sinais, vitorias, perdas, em_andamento, sinais_registados
 
 if enviar_telegram and (not telegram_token or not telegram_chat_id):
-    st.warning("⚠️ **Atenção:** Introduz o teu **Telegram Bot Token** e o **Chat ID** na barra lateral para que os alertas automáticos funcionem!")
+    st.warning("⚠️ Insere o **Telegram Bot Token** e o **Chat ID** na barra lateral.")
 
-with st.spinner(f"A vasculhar o Top 250 do mercado ({timeframe_escolhido}) a cada 5 min..."):
+with st.spinner(f"A vasculhar o Top 250 ({timeframe_escolhido})..."):
     try:
         total_sinais, vitorias, perdas, em_andamento, sinais_registados = analisar_mercado(timeframe_escolhido)
 
         sinais_enviados_set = carregar_sinais_enviados()
-        alertas_enviados_nesta_execucao = 0
 
         if enviar_telegram and telegram_token and telegram_chat_id:
             if st.session_state.get('forcar_teste', False):
-                # Enviar apenas as últimas 2 trades para teste
                 trades_teste = sinais_registados[:2]
+                if not trades_teste:
+                    st.warning("Nenhum sinal recente encontrado para teste.")
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
                             f"🧪 *[TESTE]* *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
                             f"RSI reset... @ `${s['preco']:.5f}`   *{s['status']}*   há {s['horas']} h"
                         )
-                        enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
-                st.success("✅ Alertas de teste das últimas 2 trades enviados com sucesso para o Telegram!")
+                        sucesso, msg = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
+                        if sucesso:
+                            st.success(f"✅ Alerta de teste enviado para {s['moeda']}!")
+                        else:
+                            st.error(f"❌ Falha no Telegram para {s['moeda']}: {msg}")
             else:
-                # Execução normal de 5 em 5 minutos (envia apenas o que nunca foi enviado)
                 for s in sinais_registados:
                     if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 6:
                         caption = (
                             f"🔴 *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
                             f"RSI reset... @ `${s['preco']:.5f}`   *{s['status']}*   há {s['horas']} h"
                         )
-                        sucesso = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
+                        sucesso, msg = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
                         if sucesso:
                             guardar_sinal_enviado(s['id'])
-                            alertas_enviados_nesta_execucao += 1
+                        else:
+                            st.error(f"❌ Erro ao enviar automático ({s['moeda']}): {msg}")
 
         st.markdown("---")
         col1, col2, col3, col4 = st.columns(4)
