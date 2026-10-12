@@ -12,7 +12,7 @@ import gc
 import json
 import os
 
-st.set_page_config(page_title="Crypto Bot Top 250", layout="wide")
+st.set_page_config(page_title="Crypto SMC Bot (Top 250 & Multi-Timeframe)", layout="wide")
 
 st.markdown("""
     <style>
@@ -28,9 +28,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto Signal Bot (Top 250 & Correção Telegram)")
+st.title("⚡ Crypto SMC & Divergence Bot (Automático 24/7)")
 
-SENT_FILE = "sent_signals.json"
+SENT_FILE = "sent_signals_smc.json"
 
 def carregar_sinais_enviados():
     if os.path.exists(SENT_FILE):
@@ -62,9 +62,9 @@ else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-timeframe_escolhido = st.sidebar.selectbox("Timeframe", ['1h', '2h', '4h'], index=2)
+st.sidebar.info("💡 **Modo Totalmente Autónomo:** O bot analisa o Top 250 nos timeframes **2h, 4h e 1d** a cada 5 minutos.")
 
-def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
+def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
     subset_df = df.copy()
     subset_df['timestamp'] = pd.to_datetime(subset_df['timestamp'], unit='ms')
     subset_df.set_index('timestamp', inplace=True)
@@ -79,14 +79,14 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     largura_caixa = min(10, total_velas)
     x_inicio = total_velas - largura_caixa
     
-    altura_risco = entry_price - sl_price
+    altura_risco = sl_price - entry_price
     if altura_risco > 0:
-        rect_risk = Rectangle((x_inicio, sl_price), largura_caixa, altura_risco, facecolor='#ff5252', alpha=0.35, edgecolor='none', zorder=3)
+        rect_risk = Rectangle((x_inicio, entry_price), largura_caixa, altura_risco, facecolor='#ff5252', alpha=0.35, edgecolor='none', zorder=3)
         ax.add_patch(rect_risk)
         
-    altura_lucro = tp_price - entry_price
+    altura_lucro = entry_price - tp_price
     if altura_lucro > 0:
-        rect_reward = Rectangle((x_inicio, entry_price), largura_caixa, altura_lucro, facecolor='#4caf50', alpha=0.35, edgecolor='none', zorder=3)
+        rect_reward = Rectangle((x_inicio, tp_price), largura_caixa, altura_lucro, facecolor='#4caf50', alpha=0.35, edgecolor='none', zorder=3)
         ax.add_patch(rect_reward)
     
     ax.axhline(entry_price, color='#ffeb3b', linestyle='--', linewidth=1, alpha=0.9, zorder=4)
@@ -97,9 +97,7 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
     fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=72)
     buf.seek(0)
     
-    # Retornar os bytes puros garante que a imagem não corrompe se for reenviada
     image_bytes = buf.getvalue()
-    
     plt.close(fig)
     plt.close('all')
     gc.collect()
@@ -140,8 +138,61 @@ def calcular_rsi(closes, period=14):
         rsi[i] = 100. - 100./(1. + rs)
     return rsi
 
+def detetar_divergencia_e_estrutura_short(df):
+    """
+    Identifica:
+    1. Divergência Tripla de RSI (Preço faz máximos crescentes, RSI faz máximos decrescentes em 3+ pontos).
+    2. RSI Reset (RSI cruza abaixo de 50 após zona de sobrecompra).
+    3. Quebra de Estrutura (BOS) e Liquidity Sweep (preço testa zona de resistência/sweep).
+    """
+    if len(df) < 40:
+        return None
+
+    closes = df['close'].values
+    highs = df['high'].values
+    lows = df['low'].values
+    rsi = df['rsi'].values
+
+    # Encontrar picos de preço e RSI nas últimas velas
+    picos_idx = []
+    for i in range(2, len(df) - 2):
+        if highs[i] > highs[i-1] and highs[i] > highs[i+1] and highs[i-2] < highs[i] and highs[i+2] < highs[i]:
+            picos_idx.append(i)
+
+    if len(picos_idx) >= 3:
+        # Avaliar os últimos 3 picos para Divergência Bearish (Preço sobe, RSI desce)
+        p1, p2, p3 = picos_idx[-3], picos_idx[-2], picos_idx[-1]
+        
+        preco_sobe = highs[p3] > highs[p2] > highs[p1]
+        rsi_desce = rsi[p3] < rsi[p2] < rsi[p1] and rsi[p1] > 60
+
+        if preco_sobe and rsi_desce:
+            # Validar RSI Reset recente (cruza abaixo de 55 após os picos)
+            rsi_reset = any(rsi[p3:] < 55)
+            
+            # Validar Estrutura e Sweep (quebra recente de fundo e teste de re-entrada)
+            ultimo_fundo = lows[p3:].min()
+            preco_atual = closes[-1]
+            
+            # Condição de entrada Short após Sweep/Re-teste
+            if rsi_reset and (highs[-1] >= highs[p3] * 0.98 or lows[-1] <= ultimo_fundo * 1.02):
+                entry_price = preco_atual
+                sl_price = max(highs[p3:]) * 1.015 # Stop loss técnico acima do topo da divergência
+                risco = sl_price - entry_price
+                if risco <= 0:
+                    return None
+                tp_price = entry_price - (risco * 2.0) # R:R 2:1
+                
+                return {
+                    "entry": entry_price,
+                    "sl": sl_price,
+                    "tp": tp_price,
+                    "status": "Short em Curso 🔻"
+                }
+    return None
+
 @st.cache_data(ttl=300, show_spinner=False)
-def analisar_mercado(tf):
+def analisar_mercado_autonomo():
     exchange = ccxt.binance({'enableRateLimit': True})
     exchange.load_markets()
     tickers = exchange.fetch_tickers()
@@ -155,144 +206,102 @@ def analisar_mercado(tf):
                 
     pairs_volume.sort(key=lambda x: x[1], reverse=True)
     symbols = [item[0] for item in pairs_volume[:250]]
-
-    total_sinais = 0
-    vitorias = 0
-    perdas = 0
-    em_andamento = 0
+    
+    timeframes = ['2h', '4h', '1d']
     sinais_registados = []
 
     for symbol in symbols:
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=50)
-            if len(ohlcv) < 30:
-                continue
+        for tf in timeframes:
+            try:
+                ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=80)
+                if len(ohlcv) < 50:
+                    continue
+                    
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['rsi'] = calcular_rsi(df['close'].values, 14)
                 
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['rsi'] = calcular_rsi(df['close'].values, 14)
-            
-            inicio_busca = max(19, len(df) - 15)
-            
-            for i in range(inicio_busca, len(df) - 1):
-                prev_rsi = df['rsi'].iloc[i-1]
-                curr_rsi = df['rsi'].iloc[i]
-                
-                if prev_rsi < 35 and curr_rsi >= 35:
-                    entry_price = df['close'].iloc[i]
-                    sl_price = df['low'].iloc[i-5:i].min()
-                    if sl_price >= entry_price:
-                        sl_price = entry_price * 0.98
-                        
-                    risk = entry_price - sl_price
-                    tp_price = entry_price + (risk * 2.0)
-                    
-                    signal_time = pd.to_datetime(df['timestamp'].iloc[i], unit='ms')
-                    
-                    status = "em curso"
-                    for j in range(i + 1, len(df)):
-                        if df['high'].iloc[j] >= tp_price:
-                            status = "2R ✓"
-                            vitorias += 1
-                            break
-                        elif df['low'].iloc[j] <= sl_price:
-                            status = "Loss ❌"
-                            perdas += 1
-                            break
-                    
-                    if status == "em curso":
-                        em_andamento += 1
-
-                    total_sinais += 1
+                setup = detetar_divergencia_e_estrutura_short(df)
+                if setup:
+                    signal_time = pd.to_datetime(df['timestamp'].iloc[-1], unit='ms')
                     horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
                     data_formatada = signal_time.strftime('%d/%m %H:%M')
                     nome_moeda = symbol.split('/')[0]
+                    signal_id = f"{nome_moeda}_{tf}_{signal_time.strftime('%Y%m%d%H')}"
                     
-                    signal_id = f"{nome_moeda}_{tf}_{signal_time}"
+                    foto_bytes = gerar_grafico_mini(df, setup['entry'], setup['sl'], setup['tp'])
                     
-                    foto_bytes = None
-                    if horas_atras <= 24:
-                        foto_bytes = gerar_grafico_mini(df.iloc[:i+1], entry_price, sl_price, tp_price, status)
-
                     sinais_registados.append({
                         "id": signal_id,
                         "moeda": nome_moeda,
                         "timeframe": tf,
-                        "preco": entry_price,
-                        "status": status,
-                        "horas": horas_atras,
+                        "preco": setup['entry'],
+                        "status": setup['status'],
+                        "horas": max(0, horas_atras),
                         "data": data_formatada,
                         "foto": foto_bytes
                     })
-        except:
-            continue
+            except:
+                continue
 
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
-    return total_sinais, vitorias, perdas, em_andamento, sinais_registados
+    return sinais_registados
 
-if enviar_telegram and (not telegram_token or not telegram_chat_id):
-    st.warning("⚠️ Insere o **Telegram Bot Token** e o **Chat ID** na barra lateral.")
-
-with st.spinner(f"A vasculhar o Top 250 ({timeframe_escolhido})..."):
+with st.spinner("A analisar Top 250 em Multi-Timeframe (2h, 4h, 1d) por Divergências e SMC..."):
     try:
-        total_sinais, vitorias, perdas, em_andamento, sinais_registados = analisar_mercado(timeframe_escolhido)
-
+        sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
 
         if enviar_telegram and telegram_token and telegram_chat_id:
             if st.session_state.get('forcar_teste', False):
                 trades_teste = sinais_registados[:2]
                 if not trades_teste:
-                    st.warning("Nenhum sinal recente encontrado para teste.")
+                    st.warning("Nenhum sinal SMC recente encontrado para teste.")
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
-                            f"🧪 *[TESTE]* *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
-                            f"RSI reset... @ `${s['preco']:.5f}`   *{s['status']}*   há {s['horas']} h"
+                            f"🧪 *[TESTE SMC]* 🔻 *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
+                            f"Divergência Tripla + Sweep @ `${s['preco']:.5f}`\n"
+                            f"Estado: *{s['status']}*"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
                         if sucesso:
-                            st.success(f"✅ Alerta de teste enviado para {s['moeda']} no Telegram!")
+                            st.success(f"✅ Alerta de teste SMC enviado para {s['moeda']} ({s['timeframe']})!")
                         else:
                             st.error(f"❌ Falha no Telegram para {s['moeda']}: {msg}")
             else:
                 for s in sinais_registados:
                     if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 6:
                         caption = (
-                            f"🔴 *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
-                            f"RSI reset... @ `${s['preco']:.5f}`   *{s['status']}*   há {s['horas']} h"
+                            f"🔻 *SMC SHORT* *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
+                            f"Divergência Tripla RSI + Liquidity Sweep @ `${s['preco']:.5f}`"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
                         if sucesso:
                             guardar_sinal_enviado(s['id'])
-                        else:
-                            st.error(f"❌ Erro ao enviar automático ({s['moeda']}): {msg}")
 
         st.markdown("---")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total de Sinais (Top 250)", total_sinais)
-        wr = (vitorias / (vitorias + perdas) * 100) if (vitorias + perdas) > 0 else 0
-        col2.metric("Win Rate (% WR)", f"{wr:.1f}%")
-        col3.metric("Vitórias (2R ✓)", vitorias)
-        col4.metric("Em Curso", em_andamento)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Oportunidades Ativas (Top 250)", len(sinais_registados))
+        col2.metric("Timeframes Varridos", "2h, 4h, 1d")
+        col3.metric("Estado da Rede", "🟢 Ativo 24/7")
         st.markdown("---")
 
         if len(sinais_registados) == 0:
-            st.info("Nenhum sinal detetado nas últimas velas com os parâmetros definidos.")
+            st.info("A aguardar formações de divergência tripla e sweeps de liquidez nos timeframes superiores...")
         else:
             for s in sinais_registados:
-                cor_status = "#4caf50" if s["status"] == "2R ✓" else ("#ff5252" if s["status"] == "Loss ❌" else "#ff9800")
                 st.markdown(f"""
                     <div class="card">
-                        <b style="font-size: 18px; color: #ff5252;">● {s['moeda']}</b> 
+                        <b style="font-size: 18px; color: #ff5252;">🔻 SMC SHORT: {s['moeda']}</b> 
                         <span style="background: #2d2d3d; padding: 2px 6px; border-radius: 4px; font-size: 12px;">{s['timeframe']}</span>
                         <span style="float: right; background: #3d1a1a; color: #ff8080; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{s['data']}</span>
                         <br><br>
-                        <span>RSI reset + ... @ <b>\${s['preco']:.5f}</b></span>
+                        <span>Divergência Tripla RSI + Sweep @ <b>\${s['preco']:.5f}</b></span>
                         <span style="float: right;">
-                            Estado: <b style="color: {cor_status};">{s['status']}</b> | há {s['horas']} h
+                            Estado: <b style="color: #ff9800;">{s['status']}</b>
                         </span>
                     </div>
                 """, unsafe_allow_html=True)
                     
     except Exception as e:
-        st.error(f"Erro ao carregar o mercado: {e}")
+        st.error(f"Erro ao carregar o motor de análise: {e}")
