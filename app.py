@@ -9,8 +9,7 @@ import mplfinance as mpf
 from matplotlib.patches import Rectangle
 import io
 
-# Configuração da página
-st.set_page_config(page_title="Crypto Bot com RR Ajustado", layout="wide")
+st.set_page_config(page_title="Crypto Bot Otimizado", layout="wide")
 
 st.markdown("""
     <style>
@@ -26,13 +25,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto Signal Bot (Zonas de Entrada Ajustadas)")
+st.title("⚡ Crypto Signal Bot (Otimizado 24/7)")
 
-# Memória para controlar os alertas enviados na sessão
 if 'sinais_enviados' not in st.session_state:
     st.session_state.sinais_enviados = set()
 
-# Barra lateral para configurações
 st.sidebar.header("⚙️ Configurações do Telegram")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", type="password", placeholder="Ex: 123456:ABC...")
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", placeholder="Ex: 987654321")
@@ -40,47 +37,36 @@ enviar_telegram = st.sidebar.checkbox("Ativar Alertas Automáticos", value=True)
 
 if st.sidebar.button("🔄 Reenviar Alertas para Teste"):
     st.session_state.sinais_enviados.clear()
-    st.sidebar.success("Memória limpa! Atualiza a página para reenviar.")
+    st.sidebar.success("Memória limpa! Atualiza a página.")
 
 st.sidebar.markdown("---")
 timeframe_escolhido = st.sidebar.selectbox("Timeframe", ['1h', '2h', '4h'], index=2)
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
-    """Gera um mini-gráfico de velas com as caixas de RR limitadas à zona final (estilo TradingView)"""
     subset_df = df.copy()
     subset_df['timestamp'] = pd.to_datetime(subset_df['timestamp'], unit='ms')
     subset_df.set_index('timestamp', inplace=True)
     
-    mc = mpf.make_marketcolors(up='#4caf50', down='#ff5252',
-                               edge='inherit', wick='inherit',
-                               volume='inherit')
-    
+    mc = mpf.make_marketcolors(up='#4caf50', down='#ff5252', edge='inherit', wick='inherit', volume='inherit')
     s = mpf.make_mpf_style(marketcolors=mc, facecolor='#1e1e24', edgecolor='none', gridstyle='none')
     
-    fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(6, 2.5),
-                         axisoff=True, returnfig=True)
+    fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(6, 2.5), axisoff=True, returnfig=True)
     ax = axes[0]
     
-    # Delimitar a caixa apenas para as últimas velas (bloco à direita, ex: últimas 12 velas)
     total_velas = len(subset_df)
     largura_caixa = min(12, total_velas)
     x_inicio = total_velas - largura_caixa
     
-    # Caixa de Risco (Stop Loss até Entrada) - Vermelho transparente
     altura_risco = entry_price - sl_price
     if altura_risco > 0:
-        rect_risk = Rectangle((x_inicio, sl_price), largura_caixa, altura_risco, 
-                              facecolor='#ff5252', alpha=0.35, edgecolor='none', zorder=3)
+        rect_risk = Rectangle((x_inicio, sl_price), largura_caixa, altura_risco, facecolor='#ff5252', alpha=0.35, edgecolor='none', zorder=3)
         ax.add_patch(rect_risk)
         
-    # Caixa de Recompensa (Entrada até Take Profit) - Verde transparente
     altura_lucro = tp_price - entry_price
     if altura_lucro > 0:
-        rect_reward = Rectangle((x_inicio, entry_price), largura_caixa, altura_lucro, 
-                                facecolor='#4caf50', alpha=0.35, edgecolor='none', zorder=3)
+        rect_reward = Rectangle((x_inicio, entry_price), largura_caixa, altura_lucro, facecolor='#4caf50', alpha=0.35, edgecolor='none', zorder=3)
         ax.add_patch(rect_reward)
     
-    # Linhas indicadoras de preço discretas
     ax.axhline(entry_price, color='#ffeb3b', linestyle='--', linewidth=1, alpha=0.9, zorder=4)
     ax.axhline(sl_price, color='#ff5252', linestyle=':', linewidth=1, alpha=0.9, zorder=4)
     ax.axhline(tp_price, color='#4caf50', linestyle=':', linewidth=1, alpha=0.9, zorder=4)
@@ -121,99 +107,106 @@ def calcular_rsi(closes, period=14):
         rsi[i] = 100. - 100./(1. + rs)
     return rsi
 
-# Scan automático do mercado
-exchange = ccxt.binance({'enableRateLimit': True})
-RSI_PERIOD = 14
-RR_TARGET = 2.0
+# Função com cache de 5 minutos (TTL = 300 segundos) para proteger a API da Binance
+@st.cache_data(ttl=300, show_spinner=False)
+def analisar_mercado(tf):
+    exchange = ccxt.binance({'enableRateLimit': True})
+    exchange.load_markets()
+    tickers = exchange.fetch_tickers()
+    
+    symbols = []
+    for symbol, ticker in tickers.items():
+        if '/USDT' in symbol and not 'UP/' in symbol and not 'DOWN/' in symbol:
+            quote_vol = ticker.get('quoteVolume', 0)
+            if quote_vol and quote_vol > 5000000:
+                symbols.append(symbol)
 
-with st.spinner(f"A executar scan automático ({timeframe_escolhido}) | Filtro MC > 100M\$..."):
-    try:
-        exchange.load_markets()
-        tickers = exchange.fetch_tickers()
-        
-        symbols = []
-        for symbol, ticker in tickers.items():
-            if '/USDT' in symbol and not 'UP/' in symbol and not 'DOWN/' in symbol:
-                quote_vol = ticker.get('quoteVolume', 0)
-                if quote_vol and quote_vol > 5000000:
-                    symbols.append(symbol)
+    total_sinais = 0
+    vitorias = 0
+    perdas = 0
+    em_andamento = 0
+    sinais_registados = []
+    alertas_para_enviar = []
 
-        total_sinais = 0
-        vitorias = 0
-        perdas = 0
-        em_andamento = 0
-        sinais_registados = []
-
-        for symbol in symbols[:20]:
-            try:
-                ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe_escolhido, limit=60)
-                if len(ohlcv) < 30:
-                    continue
-                    
-                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['rsi'] = calcular_rsi(df['close'].values, RSI_PERIOD)
-                
-                inicio_busca = max(RSI_PERIOD + 5, len(df) - 15)
-                
-                for i in range(inicio_busca, len(df) - 1):
-                    prev_rsi = df['rsi'].iloc[i-1]
-                    curr_rsi = df['rsi'].iloc[i]
-                    
-                    if prev_rsi < 35 and curr_rsi >= 35:
-                        entry_price = df['close'].iloc[i]
-                        sl_price = df['low'].iloc[i-5:i].min()
-                        if sl_price >= entry_price:
-                            sl_price = entry_price * 0.98
-                            
-                        risk = entry_price - sl_price
-                        tp_price = entry_price + (risk * RR_TARGET)
-                        
-                        signal_time = pd.to_datetime(df['timestamp'].iloc[i], unit='ms')
-                        
-                        status = "em curso"
-                        for j in range(i + 1, len(df)):
-                            if df['high'].iloc[j] >= tp_price:
-                                status = "2R ✓"
-                                vitorias += 1
-                                break
-                            elif df['low'].iloc[j] <= sl_price:
-                                status = "Loss ❌"
-                                perdas += 1
-                                break
-                        
-                        if status == "em curso":
-                            em_andamento += 1
-
-                        total_sinais += 1
-                        horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
-                        data_formatada = signal_time.strftime('%d/%m %H:%M')
-                        nome_moeda = symbol.split('/')[0]
-                        
-                        sinais_registados.append({
-                            "moeda": nome_moeda,
-                            "timeframe": timeframe_escolhido,
-                            "preco": entry_price,
-                            "status": status,
-                            "horas": horas_atras,
-                            "data": data_formatada
-                        })
-
-                        signal_id = f"{nome_moeda}_{timeframe_escolhydo if 'timeframe_escolhydo' in locals() else timeframe_escolhido}_{signal_time}"
-
-                        # Enviar para o Telegram com as caixas de RR localizadas
-                        if enviar_telegram and horas_atras <= 24 and signal_id not in st.session_state.sinais_enviados:
-                            foto_bytes = gerar_grafico_mini(df.iloc[:i+1], entry_price, sl_price, tp_price, status)
-                            
-                            caption = (
-                                f"🔴 *{nome_moeda}*  `{timeframe_escolhido}`          📅 `{data_formatada}`\n"
-                                f"RSI reset... @ `${entry_price:.5f}`   *{status}*   há {horas_atras} h"
-                            )
-                            enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, foto_bytes)
-                            st.session_state.sinais_enviados.add(signal_id)
-            except:
+    for symbol in symbols[:15]: # Limitado a 15 pares para máxima velocidade e estabilidade
+        try:
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=60)
+            if len(ohlcv) < 30:
                 continue
+                
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['rsi'] = calcular_rsi(df['close'].values, 14)
+            
+            inicio_busca = max(19, len(df) - 15)
+            
+            for i in range(inicio_busca, len(df) - 1):
+                prev_rsi = df['rsi'].iloc[i-1]
+                curr_rsi = df['rsi'].iloc[i]
+                
+                if prev_rsi < 35 and curr_rsi >= 35:
+                    entry_price = df['close'].iloc[i]
+                    sl_price = df['low'].iloc[i-5:i].min()
+                    if sl_price >= entry_price:
+                        sl_price = entry_price * 0.98
+                        
+                    risk = entry_price - sl_price
+                    tp_price = entry_price + (risk * 2.0)
+                    
+                    signal_time = pd.to_datetime(df['timestamp'].iloc[i], unit='ms')
+                    
+                    status = "em curso"
+                    for j in range(i + 1, len(df)):
+                        if df['high'].iloc[j] >= tp_price:
+                            status = "2R ✓"
+                            vitorias += 1
+                            break
+                        elif df['low'].iloc[j] <= sl_price:
+                            status = "Loss ❌"
+                            perdas += 1
+                            break
+                    
+                    if status == "em curso":
+                        em_andamento += 1
 
-        # Métricas de Win Rate no Topo
+                    total_sinais += 1
+                    horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
+                    data_formatada = signal_time.strftime('%d/%m %H:%M')
+                    nome_moeda = symbol.split('/')[0]
+                    
+                    sinais_registados.append({
+                        "moeda": nome_moeda,
+                        "timeframe": tf,
+                        "preco": entry_price,
+                        "status": status,
+                        "horas": horas_atras,
+                        "data": data_formatada
+                    })
+
+                    signal_id = f"{nome_moeda}_{tf}_{signal_time}"
+                    
+                    if horas_atras <= 24:
+                        foto_bytes = gerar_grafico_mini(df.iloc[:i+1], entry_price, sl_price, tp_price, status)
+                        caption = (
+                            f"🔴 *{nome_moeda}*  `{tf}`          📅 `{data_formatada}`\n"
+                            f"RSI reset... @ `${entry_price:.5f}`   *{status}*   há {horas_atras} h"
+                        )
+                        alertas_para_enviar.append((signal_id, caption, foto_bytes))
+        except:
+            continue
+
+    return total_sinais, vitorias, perdas, em_andamento, sinais_registados, alertas_para_enviar
+
+with st.spinner(f"A executar scan automático ({timeframe_escolhido}) | Otimizado..."):
+    try:
+        total_sinais, vitorias, perdas, em_andamento, sinais_registados, alertas_para_enviar = analisar_mercado(timeframe_escolhido)
+
+        # Enviar para o Telegram controlando duplicados na sessão
+        if enviar_telegram:
+            for signal_id, caption, foto_bytes in alertas_para_enviar:
+                if signal_id not in st.session_state.sinais_enviados:
+                    enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, foto_bytes)
+                    st.session_state.sinais_enviados.add(signal_id)
+
         st.markdown("---")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total de Sinais", total_sinais)
@@ -223,7 +216,6 @@ with st.spinner(f"A executar scan automático ({timeframe_escolhido}) | Filtro M
         col4.metric("Em Curso", em_andamento)
         st.markdown("---")
 
-        # Renderizar cartões na web
         if len(sinais_registados) == 0:
             st.info("Nenhum sinal detetado nas últimas velas com os parâmetros definidos.")
         else:
