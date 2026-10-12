@@ -9,6 +9,8 @@ import mplfinance as mpf
 from matplotlib.patches import Rectangle
 import io
 import gc
+import json
+import os
 
 st.set_page_config(page_title="Crypto Bot Top 250", layout="wide")
 
@@ -26,25 +28,49 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto Signal Bot (Top 250 & Gráficos Otimizados)")
+st.title("⚡ Crypto Signal Bot (Top 250 & Automático 24/7)")
 
-if 'sinais_enviados' not in st.session_state:
-    st.session_state.sinais_enviados = set()
+# Ficheiro local para persistir os sinais enviados entre pings do UptimeRobot
+SENT_FILE = "sent_signals.json"
+
+def carregar_sinais_enviados():
+    if os.path.exists(SENT_FILE):
+        try:
+            with open(SENT_FILE, "r") as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
+
+def guardar_sinal_enviado(signal_id):
+    enviados = carregar_sinais_enviados()
+    enviados.add(signal_id)
+    try:
+        with open(SENT_FILE, "w") as f:
+            json.dump(list(enviados), f)
+    except Exception as e:
+        print(f"Erro ao guardar sinal: {e}")
+
+def limpar_sinais_enviados():
+    if os.path.exists(SENT_FILE):
+        os.remove(SENT_FILE)
 
 st.sidebar.header("⚙️ Configurações do Telegram")
 telegram_token = st.sidebar.text_input("Telegram Bot Token", type="password", placeholder="Ex: 123456:ABC...")
 telegram_chat_id = st.sidebar.text_input("Telegram Chat ID", placeholder="Ex: 987654321")
 enviar_telegram = st.sidebar.checkbox("Ativar Alertas Automáticos", value=True)
 
-if st.sidebar.button("🔄 Reenviar Alertas para Teste"):
-    st.session_state.sinais_enviados.clear()
-    st.sidebar.success("Memória limpa! Atualiza a página.")
+# Botão de teste: envia apenas os alertas das últimas 2 trades
+if st.sidebar.button("🔄 Reenviar Alertas para Teste (Últimas 2)"):
+    st.session_state.forcar_teste = True
+    st.sidebar.success("Modo de teste ativado para as últimas 2 trades!")
+else:
+    st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
 timeframe_escolhido = st.sidebar.selectbox("Timeframe", ['1h', '2h', '4h'], index=2)
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
-    """Gera o gráfico de velas otimizado para poupar RAM"""
     subset_df = df.copy()
     subset_df['timestamp'] = pd.to_datetime(subset_df['timestamp'], unit='ms')
     subset_df.set_index('timestamp', inplace=True)
@@ -85,14 +111,16 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, status):
 
 def enviar_alerta_telegram_com_foto(token, chat_id, caption, foto_bytes):
     if not token or not chat_id:
-        return
+        return False
     url = f"https://api.telegram.org/bot{token}/sendPhoto"
     files = {'photo': ('chart.png', foto_bytes, 'image/png')}
     data = {'chat_id': chat_id, 'caption': caption, 'parse_mode': 'Markdown'}
     try:
-        requests.post(url, data=data, files=files, timeout=10)
+        response = requests.post(url, data=data, files=files, timeout=10)
+        return response.status_code == 200
     except Exception as e:
         print(f"Erro ao enviar para o Telegram: {e}")
+        return False
 
 def calcular_rsi(closes, period=14):
     deltas = np.diff(closes)
@@ -119,15 +147,13 @@ def analisar_mercado(tf):
     exchange.load_markets()
     tickers = exchange.fetch_tickers()
     
-    # Filtrar e ordenar por volume (Top 250 moedas com maior liquidez/tamanho)
     pairs_volume = []
     for symbol, ticker in tickers.items():
         if '/USDT' in symbol and not 'UP/' in symbol and not 'DOWN/' in symbol:
             quote_vol = ticker.get('quoteVolume', 0)
-            if quote_vol and quote_vol > 5000000: # Filtro base de volume mínimo
+            if quote_vol and quote_vol > 5000000:
                 pairs_volume.append((symbol, quote_vol))
                 
-    # Ordenar do maior para o menor volume e selecionar os top 250
     pairs_volume.sort(key=lambda x: x[1], reverse=True)
     symbols = [item[0] for item in pairs_volume[:250]]
 
@@ -136,7 +162,6 @@ def analisar_mercado(tf):
     perdas = 0
     em_andamento = 0
     sinais_registados = []
-    alertas_para_enviar = []
 
     for symbol in symbols:
         try:
@@ -183,42 +208,68 @@ def analisar_mercado(tf):
                     data_formatada = signal_time.strftime('%d/%m %H:%M')
                     nome_moeda = symbol.split('/')[0]
                     
+                    signal_id = f"{nome_moeda}_{tf}_{signal_time}"
+                    
+                    # Gerar gráfico apenas se for recente para poupar RAM
+                    foto_bytes = None
+                    if horas_atras <= 24:
+                        foto_bytes = gerar_grafico_mini(df.iloc[:i+1], entry_price, sl_price, tp_price, status)
+
                     sinais_registados.append({
+                        "id": signal_id,
                         "moeda": nome_moeda,
                         "timeframe": tf,
                         "preco": entry_price,
                         "status": status,
                         "horas": horas_atras,
-                        "data": data_formatada
+                        "data": data_formatada,
+                        "foto": foto_bytes
                     })
-
-                    signal_id = f"{nome_moeda}_{tf}_{signal_time}"
-                    
-                    if horas_atras <= 24:
-                        foto_bytes = gerar_grafico_mini(df.iloc[:i+1], entry_price, sl_price, tp_price, status)
-                        caption = (
-                            f"🔴 *{nome_moeda}*  `{tf}`          📅 `{data_formatada}`\n"
-                            f"RSI reset... @ `${entry_price:.5f}`   *{status}*   há {horas_atras} h"
-                        )
-                        alertas_para_enviar.append((signal_id, caption, foto_bytes))
         except:
             continue
 
-    return total_sinais, vitorias, perdas, em_andamento, sinais_registados, alertas_para_enviar
+    # Ordenar por mais recente
+    sinais_registados.sort(key=lambda x: x['data'], reverse=True)
+    return total_sinais, vitorias, perdas, em_andamento, sinais_registados
 
-with st.spinner(f"A vasculhar o Top 250 do mercado ({timeframe_escolhido})..."):
+if enviar_telegram and (not telegram_token or not telegram_chat_id):
+    st.warning("⚠️ **Atenção:** Introduz o teu **Telegram Bot Token** e o **Chat ID** na barra lateral para que os alertas automáticos funcionem!")
+
+with st.spinner(f"A vasculhar o Top 250 do mercado ({timeframe_escolhido}) a cada 5 min..."):
     try:
-        total_sinais, vitorias, perdas, em_andamento, sinais_registados, alertas_para_enviar = analisar_mercado(timeframe_escolhido)
+        total_sinais, vitorias, perdas, em_andamento, sinais_registados = analisar_mercado(timeframe_escolhido)
 
-        if enviar_telegram:
-            for signal_id, caption, foto_bytes in alertas_para_enviar:
-                if signal_id not in st.session_state.sinais_enviados:
-                    enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, foto_bytes)
-                    st.session_state.sinais_enviados.add(signal_id)
+        sinais_enviados_set = carregar_sinais_enviados()
+        alertas_enviados_nesta_execucao = 0
+
+        if enviar_telegram and telegram_token and telegram_chat_id:
+            if st.session_state.get('forcar_teste', False):
+                # Enviar apenas as últimas 2 trades para teste
+                trades_teste = sinais_registados[:2]
+                for s in trades_teste:
+                    if s['foto']:
+                        caption = (
+                            f"🧪 *[TESTE]* *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
+                            f"RSI reset... @ `${s['preco']:.5f}`   *{s['status']}*   há {s['horas']} h"
+                        )
+                        enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
+                st.success("✅ Alertas de teste das últimas 2 trades enviados com sucesso para o Telegram!")
+            else:
+                # Execução normal de 5 em 5 minutos (envia apenas o que nunca foi enviado)
+                for s in sinais_registados:
+                    if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 6:
+                        caption = (
+                            f"🔴 *{s['moeda']}*  `{s['timeframe']}`          📅 `{s['data']}`\n"
+                            f"RSI reset... @ `${s['preco']:.5f}`   *{s['status']}*   há {s['horas']} h"
+                        )
+                        sucesso = enviar_alerta_telegram_com_foto(telegram_token, telegram_chat_id, caption, s['foto'])
+                        if sucesso:
+                            guardar_sinal_enviado(s['id'])
+                            alertas_enviados_nesta_execucao += 1
 
         st.markdown("---")
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total de Sinais", total_sinais)
+        col1.metric("Total de Sinais (Top 250)", total_sinais)
         wr = (vitorias / (vitorias + perdas) * 100) if (vitorias + perdas) > 0 else 0
         col2.metric("Win Rate (% WR)", f"{wr:.1f}%")
         col3.metric("Vitórias (2R ✓)", vitorias)
