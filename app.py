@@ -21,7 +21,7 @@ TELEGRAM_CHAT_ID = "6311547341"
 # --- CHAVE DA IA (Lida com segurança das Variáveis de Ambiente do Render) ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-st.set_page_config(page_title="Crypto SMC & AI Bot (Top 250)", layout="wide")
+st.set_page_config(page_title="Crypto RSI Divergence Bot (Top 250)", layout="wide")
 
 st.markdown("""
     <style>
@@ -45,9 +45,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto SMC & AI Vision Bot (Automático 24/7)")
+st.title("⚡ Crypto RSI Divergence & AI Vision Bot (24/7)")
 
-SENT_FILE = "sent_signals_smc.json"
+SENT_FILE = "sent_signals_divergence.json"
 
 def carregar_sinais_enviados():
     if os.path.exists(SENT_FILE):
@@ -70,14 +70,14 @@ def guardar_sinal_enviado(signal_id):
 st.sidebar.header("⚙️ Configurações do Bot & IA")
 enviar_telegram = st.sidebar.checkbox("Ativar Alertas Automáticos no Telegram", value=True)
 
-if st.sidebar.button("🔄 Reenviar Alertas para Teste (Últimas 2)"):
+if st.sidebar.button("🔄 Reenviar Alertas para Teste"):
     st.session_state.forcar_teste = True
     st.sidebar.success("Modo de teste ativado!")
 else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Modo Totalmente Autónomo:** Chave de IA configurada de forma segura no Render. O bot analisa o Top 250 em **2h, 4h e 1d** de 5 em 5 minutos.")
+st.sidebar.info("💡 **Modo Autónomo:** Varre o Top 250 em 30m, 1h, 2h, 4h, 6h, 12h e 1d detetando divergências definitivas de RSI com filtro de timeframe superior.")
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
     try:
@@ -123,19 +123,19 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
         return None
 
 def auditar_grafico_com_gemini(foto_bytes, symbol, tf, preco):
-    """Agente de IA treinado para pensar como um trader institucional SMC"""
+    """Agente de IA treinado para validar divergências de RSI e estrutura técnica"""
     if not GEMINI_API_KEY or foto_bytes is None:
-        return "Análise de IA pendente (Defina a variável GEMINI_API_KEY no Render)."
+        return "Análise de IA pendente (Defina GEMINI_API_KEY no Render)."
     
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = (
-            f"És um analista trader institucional sênior especialista em SMC (Smart Money Concepts), "
-            f"Divergências de RSI e gestão de risco. Analisa este gráfico de {symbol} ({tf}) com entrada Short @ \${preco:.5f}. "
-            f"O retângulo vermelho representa o Risco (Stop Loss) e o verde representa o Alvo (Take Profit 2:1). "
+            f"És um analista trader institucional sênior especialista em Divergências de RSI e Action Price. "
+            f"Analisa este gráfico de {symbol} no timeframe de {tf} com sinal de Divergência Bearish @ \${preco:.5f}. "
+            f"O retângulo vermelho é o Risco (Stop Loss) e o verde é o Take Profit (2:1). "
             f"Responde estritamente em duas linhas curtas e objetivas em Português: "
-            f"1) Avaliação da estrutura de preço e validação do sweep/divergência. "
+            f"1) Validação da divergência de RSI (máximos ascendentes no preço vs máximos descendentes no RSI). "
             f"2) Veredito final com emoji (ex: Aprovado ✅ ou Cuidado ⚠️)."
         )
         
@@ -184,53 +184,53 @@ def calcular_rsi(closes, period=14):
         rsi[i] = 100. - 100./(1. + rs)
     return rsi
 
-def detetar_divergencia_e_estrutura_short(df):
+def detetar_divergencia_rsi(df):
     try:
-        if len(df) < 40:
+        if len(df) < 30:
             return None
 
         closes = df['close'].values
         highs = df['high'].values
-        lows = df['low'].values
         rsi = df['rsi'].values
 
+        # Encontrar picos locais definitivos (excluindo a última vela em formação)
         picos_idx = []
-        for i in range(2, len(df) - 2):
-            if highs[i] > highs[i-1] and highs[i] > highs[i+1] and highs[i-2] < highs[i] and highs[i+2] < highs[i]:
+        for i in range(2, len(df) - 1):
+            if highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and highs[i] >= highs[i-2] and highs[i] >= highs[i+2]:
                 picos_idx.append(i)
 
-        if len(picos_idx) >= 3:
-            p1, p2, p3 = picos_idx[-3], picos_idx[-2], picos_idx[-1]
-            
-            preco_sobe = highs[p3] > highs[p2] > highs[p1]
-            rsi_desce = rsi[p3] < rsi[p2] < rsi[p1] and rsi[p1] > 60
+        if len(picos_idx) >= 2:
+            # Pegar nos últimos 2 picos para validar a divergência (2 ou mais picos)
+            p1 = picos_idx[-2]
+            p2 = picos_idx[-1]
+
+            # Condição Bearish: Preço faz Máximo Maior (Higher High), RSI faz Máximo Menor (Lower High)
+            preco_sobe = highs[p2] > highs[p1]
+            rsi_desce = rsi[p2] < rsi[p1] and rsi[p2] > 55
 
             if preco_sobe and rsi_desce:
-                rsi_reset = any(rsi[p3:] < 55)
-                ultimo_fundo = lows[p3:].min()
-                preco_atual = closes[-1]
+                entry_price = closes[-1] # Preço de fecho da última vela definitiva
+                sl_price = max(highs[p1], highs[p2]) * 1.015
+                risco = sl_price - entry_price
+                if risco <= 0:
+                    return None
+                tp_price = entry_price - (risco * 2.0)
                 
-                if rsi_reset and (highs[-1] >= highs[p3] * 0.98 or lows[-1] <= ultimo_fundo * 1.02):
-                    entry_price = preco_atual
-                    sl_price = max(highs[p3:]) * 1.015 
-                    risco = sl_price - entry_price
-                    if risco <= 0:
-                        return None
-                    tp_price = entry_price - (risco * 2.0) 
-                    
-                    return {
-                        "entry": entry_price,
-                        "sl": sl_price,
-                        "tp": tp_price,
-                        "status": "Short em Curso 🔻"
-                    }
+                return {
+                    "entry": entry_price,
+                    "sl": sl_price,
+                    "tp": tp_price,
+                    "status": "Divergência Bearish RSI 🔻"
+                }
     except Exception:
         pass
     return None
 
 @st.cache_data(ttl=300, show_spinner=False)
 def analisar_mercado_autonomo():
-    sinais_registados = []
+    sinais_brutos = []
+    tf_priority = {'30m': 1, '1h': 2, '2h': 3, '4h': 4, '6h': 5, '12h': 6, '1d': 7}
+    
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
         exchange.load_markets()
@@ -246,19 +246,23 @@ def analisar_mercado_autonomo():
         pairs_volume.sort(key=lambda x: x[1], reverse=True)
         symbols = [item[0] for item in pairs_volume[:250]]
         
-        timeframes = ['2h', '4h', '1d']
+        timeframes = ['30m', '1h', '2h', '4h', '6h', '12h', '1d']
 
         for symbol in symbols:
             for tf in timeframes:
                 try:
-                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=80)
+                    # Pedir velas e descartar a última (velas em formação / não definitivas)
+                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
                     if len(ohlcv) < 50:
                         continue
+                    
+                    # Garantir apenas velas definitivas (excluir a última em curso)
+                    ohlcv_definitivo = ohlcv[:-1]
                         
-                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df = pd.DataFrame(ohlcv_definitivo, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['rsi'] = calcular_rsi(df['close'].values, 14)
                     
-                    setup = detetar_divergencia_e_estrutura_short(df)
+                    setup = detetar_divergencia_rsi(df)
                     if setup:
                         signal_time = pd.to_datetime(df['timestamp'].iloc[-1], unit='ms')
                         horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
@@ -267,14 +271,13 @@ def analisar_mercado_autonomo():
                         signal_id = f"{nome_moeda}_{tf}_{signal_time.strftime('%Y%m%d%H')}"
                         
                         foto_bytes = gerar_grafico_mini(df, setup['entry'], setup['sl'], setup['tp'])
-                        
-                        # Auditoria pelo Agente de IA Gemini
                         parecer_ia = auditar_grafico_com_gemini(foto_bytes, nome_moeda, tf, setup['entry'])
                         
-                        sinais_registados.append({
+                        sinais_brutos.append({
                             "id": signal_id,
                             "moeda": nome_moeda,
                             "timeframe": tf,
+                            "tf_peso": tf_priority.get(tf, 1),
                             "preco": setup['entry'],
                             "status": setup['status'],
                             "horas": max(0, horas_atras),
@@ -287,10 +290,22 @@ def analisar_mercado_autonomo():
     except Exception:
         pass
 
+    # Filtrar hierarquia: se uma moeda tiver divergência em vários timeframes, manter apenas o de maior prioridade
+    sinais_por_moeda = {}
+    for s in sinais_brutos:
+        moeda = s['moeda']
+        if moeda not in sinais_por_moeda:
+            sinais_por_moeda[moeda] = s
+        else:
+            # Se o timeframe atual tiver maior peso que o registado, substituir
+            if s['tf_peso'] > sinais_por_moeda[moeda]['tf_peso']:
+                sinais_por_moeda[moeda] = s
+
+    sinais_registados = list(sinais_por_moeda.values())
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return sinais_registados
 
-with st.spinner("A analisar Top 250 em Multi-Timeframe e a auditar com IA..."):
+with st.spinner("A analisar Top 250 em 7 Timeframes com foco em velas definitivas..."):
     try:
         sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
@@ -299,25 +314,25 @@ with st.spinner("A analisar Top 250 em Multi-Timeframe e a auditar com IA..."):
             if st.session_state.get('forcar_teste', False):
                 trades_teste = sinais_registados[:2]
                 if not trades_teste:
-                    st.warning("Nenhum sinal SMC recente encontrado para teste.")
+                    st.warning("Nenhuma divergência definitiva encontrada para teste neste momento.")
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
-                            f"🧪 *[TESTE IA + SMC]* 🔻 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
-                            f"Entrada Short @ `${s['preco']:.5f}`\n\n"
+                            f"🧪 *[TESTE RSI DIVERGENCE]* 🔻 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
+                            f"Preço de Fecho Definitivo @ `${s['preco']:.5f}`\n\n"
                             f"🤖 *Auditoria da IA:*\n{s['parecer_ia']}"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(caption, s['foto'])
                         if sucesso:
-                            st.success(f"✅ Alerta com IA enviado para {s['moeda']} ({s['timeframe']})!")
+                            st.success(f"✅ Alerta enviado para {s['moeda']} ({s['timeframe']})!")
                         else:
                             st.error(f"❌ Falha no Telegram: {msg}")
             else:
                 for s in sinais_registados:
                     if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 6:
                         caption = (
-                            f"🔻 *SMC SHORT + IA* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
-                            f"Entrada @ `${s['preco']:.5f}`\n\n"
+                            f"🔻 *DIVERGÊNCIA RSI* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
+                            f"Preço @ `${s['preco']:.5f}`\n\n"
                             f"🤖 *Auditoria:*\n{s['parecer_ia']}"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(caption, s['foto'])
@@ -326,22 +341,22 @@ with st.spinner("A analisar Top 250 em Multi-Timeframe e a auditar com IA..."):
 
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Oportunidades Ativas (Top 250)", len(sinais_registados))
-        col2.metric("Timeframes Varridos", "2h, 4h, 1d")
-        col3.metric("Estado da IA", "🟢 Gemini Vision Ativo")
+        col1.metric("Divergências Definitivas Ativas", len(sinais_registados))
+        col2.metric("Timeframes Analisados", "30m a 1D (Velas Fechadas)")
+        col3.metric("Filtro Hierárquico", "Ativo (Maior TF Prioritário)")
         st.markdown("---")
 
         if len(sinais_registados) == 0:
-            st.info("A aguardar formações de divergência tripla e sweeps de liquidez nos timeframes superiores...")
+            st.info("A aguardar fecho de velas com divergências de RSI válidas nos timeframes configurados...")
         else:
             for s in sinais_registados:
                 st.markdown(f"""
                     <div class="card">
-                        <b style="font-size: 18px; color: #ff5252;">🔻 SMC SHORT: {s['moeda']}</b> 
+                        <b style="font-size: 18px; color: #ff5252;">🔻 DIVERGÊNCIA RSI: {s['moeda']}</b> 
                         <span style="background: #2d2d3d; padding: 2px 6px; border-radius: 4px; font-size: 12px;">{s['timeframe']}</span>
                         <span style="float: right; background: #3d1a1a; color: #ff8080; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{s['data']}</span>
                         <br><br>
-                        <span>Entrada @ <b>\${s['preco']:.5f}</b></span>
+                        <span>Preço de Fecho @ <b>\${s['preco']:.5f}</b></span>
                         <span style="float: right;">
                             Estado: <b style="color: #ff9800;">{s['status']}</b>
                         </span>
