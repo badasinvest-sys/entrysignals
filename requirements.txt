@@ -5,3 +5,4 @@ streamlit
 matplotlib
 mplfinance
 requests
+google-genai
