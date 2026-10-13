@@ -77,7 +77,7 @@ else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Modo Autónomo:** Varre o Top 250 em 30m, 1h, 2h, 4h, 6h, 12h e 1d detetando divergências definitivas de RSI com filtro de timeframe superior.")
+st.sidebar.info("💡 **Modo Autónomo:** Varrimento alargado a 10 dias em 30m, 1h, 2h, 4h, 6h, 12h e 1d com velas definitivas.")
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
     try:
@@ -200,28 +200,35 @@ def detetar_divergencia_rsi(df):
                 picos_idx.append(i)
 
         if len(picos_idx) >= 2:
-            # Pegar nos últimos 2 picos para validar a divergência (2 ou mais picos)
-            p1 = picos_idx[-2]
-            p2 = picos_idx[-1]
+            # Varrimento retroativo até 10 dias (240 horas) para encontrar picos com divergência
+            for idx in range(len(picos_idx) - 1, 0, -1):
+                p1 = picos_idx[idx - 1]
+                p2 = picos_idx[idx]
 
-            # Condição Bearish: Preço faz Máximo Maior (Higher High), RSI faz Máximo Menor (Lower High)
-            preco_sobe = highs[p2] > highs[p1]
-            rsi_desce = rsi[p2] < rsi[p1] and rsi[p2] > 55
-
-            if preco_sobe and rsi_desce:
-                entry_price = closes[-1] # Preço de fecho da última vela definitiva
-                sl_price = max(highs[p1], highs[p2]) * 1.015
-                risco = sl_price - entry_price
-                if risco <= 0:
-                    return None
-                tp_price = entry_price - (risco * 2.0)
+                signal_time = pd.to_datetime(df['timestamp'].iloc[p2], unit='ms')
+                horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
                 
-                return {
-                    "entry": entry_price,
-                    "sl": sl_price,
-                    "tp": tp_price,
-                    "status": "Divergência Bearish RSI 🔻"
-                }
+                if horas_atras > 240: # Limite de 10 dias atrás
+                    continue
+
+                preco_sobe = highs[p2] > highs[p1]
+                rsi_desce = rsi[p2] < rsi[p1] and rsi[p2] > 55
+
+                if preco_sobe and rsi_desce:
+                    entry_price = closes[p2] # Preço no momento do pico da divergência
+                    sl_price = max(highs[p1], highs[p2]) * 1.015
+                    risco = sl_price - entry_price
+                    if risco <= 0:
+                        continue
+                    tp_price = entry_price - (risco * 2.0)
+                    
+                    return {
+                        "entry": entry_price,
+                        "sl": sl_price,
+                        "tp": tp_price,
+                        "status": "Divergência Bearish RSI 🔻",
+                        "signal_time": signal_time
+                    }
     except Exception:
         pass
     return None
@@ -251,20 +258,19 @@ def analisar_mercado_autonomo():
         for symbol in symbols:
             for tf in timeframes:
                 try:
-                    # Pedir velas e descartar a última (velas em formação / não definitivas)
-                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
+                    # 500 velas para garantir cobertura de histórico até 10 dias atrás
+                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=500)
                     if len(ohlcv) < 50:
                         continue
                     
-                    # Garantir apenas velas definitivas (excluir a última em curso)
-                    ohlcv_definitivo = ohlcv[:-1]
+                    ohlcv_definitivo = ohlcv[:-1] # Excluir a última vela em curso
                         
                     df = pd.DataFrame(ohlcv_definitivo, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['rsi'] = calcular_rsi(df['close'].values, 14)
                     
                     setup = detetar_divergencia_rsi(df)
                     if setup:
-                        signal_time = pd.to_datetime(df['timestamp'].iloc[-1], unit='ms')
+                        signal_time = setup['signal_time']
                         horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
                         data_formatada = signal_time.strftime('%d/%m %H:%M')
                         nome_moeda = symbol.split('/')[0]
@@ -290,14 +296,13 @@ def analisar_mercado_autonomo():
     except Exception:
         pass
 
-    # Filtrar hierarquia: se uma moeda tiver divergência em vários timeframes, manter apenas o de maior prioridade
+    # Filtrar hierarquia: se uma moeda tiver divergência em vários timeframes, manter apenas o superior
     sinais_por_moeda = {}
     for s in sinais_brutos:
         moeda = s['moeda']
         if moeda not in sinais_por_moeda:
             sinais_por_moeda[moeda] = s
         else:
-            # Se o timeframe atual tiver maior peso que o registado, substituir
             if s['tf_peso'] > sinais_por_moeda[moeda]['tf_peso']:
                 sinais_por_moeda[moeda] = s
 
@@ -305,7 +310,7 @@ def analisar_mercado_autonomo():
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return sinais_registados
 
-with st.spinner("A analisar Top 250 em 7 Timeframes com foco em velas definitivas..."):
+with st.spinner("A analisar Top 250 (Histórico de 10 dias) com foco em velas definitivas..."):
     try:
         sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
@@ -314,12 +319,12 @@ with st.spinner("A analisar Top 250 em 7 Timeframes com foco em velas definitiva
             if st.session_state.get('forcar_teste', False):
                 trades_teste = sinais_registados[:2]
                 if not trades_teste:
-                    st.warning("Nenhuma divergência definitiva encontrada para teste neste momento.")
+                    st.warning("Nenhuma divergência encontrada nos últimos 10 dias para teste.")
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
                             f"🧪 *[TESTE RSI DIVERGENCE]* 🔻 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
-                            f"Preço de Fecho Definitivo @ `${s['preco']:.5f}`\n\n"
+                            f"Preço @ `${s['preco']:.5f}`\n\n"
                             f"🤖 *Auditoria da IA:*\n{s['parecer_ia']}"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(caption, s['foto'])
@@ -329,7 +334,8 @@ with st.spinner("A analisar Top 250 em 7 Timeframes com foco em velas definitiva
                             st.error(f"❌ Falha no Telegram: {msg}")
             else:
                 for s in sinais_registados:
-                    if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 6:
+                    # Apenas envia para o Telegram se o sinal for novo E tiver ocorrido nas últimas 12 horas (evita spam de histórico antigo)
+                    if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 12:
                         caption = (
                             f"🔻 *DIVERGÊNCIA RSI* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
                             f"Preço @ `${s['preco']:.5f}`\n\n"
@@ -338,16 +344,19 @@ with st.spinner("A analisar Top 250 em 7 Timeframes com foco em velas definitiva
                         sucesso, msg = enviar_alerta_telegram_com_foto(caption, s['foto'])
                         if sucesso:
                             guardar_sinal_enviado(s['id'])
+                    elif s['id'] not in sinais_enviados_set and s['horas'] > 12:
+                        # Regista os antigos como já "vistos" para não tentar enviá-los futuramente
+                        guardar_sinal_enviado(s['id'])
 
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Divergências Definitivas Ativas", len(sinais_registados))
-        col2.metric("Timeframes Analisados", "30m a 1D (Velas Fechadas)")
+        col1.metric("Divergências (Últimos 10 Dias)", len(sinais_registados))
+        col2.metric("Timeframes Varridos", "30m a 1D")
         col3.metric("Filtro Hierárquico", "Ativo (Maior TF Prioritário)")
         st.markdown("---")
 
         if len(sinais_registados) == 0:
-            st.info("A aguardar fecho de velas com divergências de RSI válidas nos timeframes configurados...")
+            st.info("Nenhuma divergência de RSI encontrada nos últimos 10 dias no Top 250.")
         else:
             for s in sinais_registados:
                 st.markdown(f"""
@@ -356,7 +365,7 @@ with st.spinner("A analisar Top 250 em 7 Timeframes com foco em velas definitiva
                         <span style="background: #2d2d3d; padding: 2px 6px; border-radius: 4px; font-size: 12px;">{s['timeframe']}</span>
                         <span style="float: right; background: #3d1a1a; color: #ff8080; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{s['data']}</span>
                         <br><br>
-                        <span>Preço de Fecho @ <b>\${s['preco']:.5f}</b></span>
+                        <span>Preço no Sinal @ <b>\${s['preco']:.5f}</b></span>
                         <span style="float: right;">
                             Estado: <b style="color: #ff9800;">{s['status']}</b>
                         </span>
