@@ -1,145 +1,22 @@
-SCANNER RSI + ROMPIMENTO/RETESTE — RENDER (1 SERVIÇO, SEM BASE DE DADOS)
-Versão: outubro de 2026
+BUILD COMMAND
+pip install -r requirements.txt
 
-1) FICHEIROS A COLOCAR NO GITHUB
-- start.py                  supervisor: Streamlit e scanner no mesmo Web Service
-- app.py                    painel com filtros e resultados
-- rsi_divergence_bot.py     RSI, varredura, dados da exchange, alertas Telegram
-- breakout_setup.py         detetor independente de rompimento e reteste
-- requirements.txt          dependências mínimas
-- test_setups.py            testes OFFLINE, não contactam Telegram ou MEXC
+START COMMAND
+python start.py
 
-Não é necessário criar PostgreSQL, segundo serviço ou serviço pago.
-
-2) RENDER — CONFIGURAÇÃO
-Build command: pip install -r requirements.txt
-Start command: python start.py
-
-Mantém o teu Web Service atual e o UptimeRobot com pings de 5 em 5 minutos.
-NOTA: UptimeRobot não inicia varreduras. O supervisor mantém um scanner
-independente, que inicia uma varredura no arranque e procura repetir a cada
-300 segundos enquanto o processo estiver ativo. Se cada scan durar >300s,
-o próximo ciclo começará assim que o anterior terminar.
-
-3) VARIÁVEIS DE AMBIENTE (Render > Environment)
+VARIÁVEIS DE AMBIENTE RECOMENDADAS
 EXCHANGE_ID=mexc
 SCAN_INTERVAL_SECONDS=300
 SCAN_TOP_N=35
-TIMEFRAMES=15m,30m,1h,2h,4h,6h,12h,1d
-OHLCV_LIMIT=360
-RSI_PERIOD=14
-MAX_PIVOTS_IN_PATTERN=4
-MAX_SIGNAL_AGE_BARS=4
-BREAKOUT_HISTORY_BARS=180
-BREAKOUT_SEARCH_BARS=36
-MIN_RESISTANCE_TOUCHES=3
-LEVEL_VOLUME_RATIO=1.30
-BREAKOUT_VOLUME_RATIO=1.35
-BREAKOUT_MAX_AGE_BARS=2
-RETEST_MAX_BARS=18
-ENTRY_ON_LIVE_CANDLE=true
-TELEGRAM_BOT_TOKEN=TOKEN_NOVO
-TELEGRAM_CHAT_ID=ID_DO_CHAT
-LOG_LEVEL=INFO
+TIMEFRAMES=15m,30m,1h,4h,1d
+OHLCV_LIMIT=320
+TELEGRAM_BOT_TOKEN=coloca_o_teu_token_novo
+TELEGRAM_CHAT_ID=coloca_o_teu_chat_id
+EXTRA_SYMBOLS=AEROUSDT,MARSCOINUSDT
 
-EXTRA_SYMBOLS=MARS/USDT,PUMP/USDT  (OPCIONAL; EXEMPLOS DE FORMATO,
-                                   não garantia de que estes pares existem)
-O parâmetro EXTRA_SYMBOLS acrescenta pares à lista top-N (sobretudo moedas
-pequenas como as do teu exemplo). Descobre o símbolo exato do mercado MEXC
-antes de o indicar; pares inexistentes serão ignorados com aviso nos logs.
-
-Atenção: configurar `SCAN_TOP_N=35` NÃO analisa todo o mercado USDT, apenas
-os 35 pares Spot/USDT mais líquidos + os de EXTRA_SYMBOLS. Aumentar muito
-SCAN_TOP_N e/ou o número de timeframes pode ultrapassar os 300 segundos.
-
-4) REGRAS RSI
-- Bullish regular: preço com mínimos progressivamente MAIS BAIXOS,
-  RSI com mínimos progressivamente MAIS ALTOS.
-- Bearish regular: preço com máximos progressivamente MAIS ALTOS,
-  RSI com máximos progressivamente MAIS BAIXOS.
-- 15m, 30m, 1h, 2h, 6h, 12h: EXIGE >=3 pivots consistentes.
-- 4h, 1d: permite >=3 pivots OU 2 pivots (padrão clássico).
-- RSI de Wilder de 14 períodos; associa pivots do RSI a máximos/mínimos de
-  preço até 3 velas antes/depois. Só usam velas fechadas.
-- O scanner tenta analisar os oito timeframes especificados. Se a exchange
-  não disponibilizar 2h/6h/12h, agrega velas fechadas de 1h, omitindo grupos
-  incompletos. Se o histórico devolvido for insuficiente, avisa nos logs.
-
-5) REGRAS ROMPIMENTO/RETESTE — APENAS 4h E 1d
-(A) Validar resistência HISTÓRICA antes do breakout:
-  - pelo menos 3 pivots de máximo (toques/rejeições) separados;
-  - o preço foi rejeitado próximo do mesmo nível;
-  - a zona só conta se houver volume local elevado, medido pela média
-    relativa nas velas de rejeição ou por perfil de volume ESTIMADO.
-
-IMPORTANTE: OHLCV NÃO TEM volume real executado a cada preço. O perfil
-aproxima-o distribuindo uniformemente o volume de cada vela entre low e high.
-Para confirmar um verdadeiro high-volume node seria necessário obter trades
-ou dados reais de volume-at-price, normalmente mais custosos.
-
-(B) Rompimento:
-  - candle FECHADO acima da parte superior da zona;
-  - volume desse candle >= 1,35x mediana do volume das 20 velas anteriores.
-
-(C) Sustentação → envia "🚀 POSSÍVEL SETUP":
-  - 4h: 3 velas FECHADAS DEPOIS do rompimento, todas com fecho > nível central;
-  - 1d: 2 velas FECHADAS DEPOIS do rompimento, com fecho > nível central;
-  - se houver fecho abaixo da base da zona a sustentação perde validade.
-  - o alerta de possível setup NÃO é ainda um alerta de entrada.
-
-(D) Reteste → envia "🎯 ENTRADA — RETESTE":
-  - só depois da fase de sustentação;
-  - o preço precisa afastar-se da zona antes de recuar;
-  - recua para perto da zona, com retração moderada e volta a negociar acima
-    do nível central; se quebrar profundamente a base da zona, é invalidado.
-  - uma "Entrada" e um "Possível setup" têm IDs diferentes; cada etapa
-    é enviada no máximo uma vez por rompimento enquanto existir o ficheiro
-    local de histórico de alertas.
-
-ENTRY_ON_LIVE_CANDLE=true:
-  Na vela atual em formação, se o LOW tocar a zona e o último preço estiver
-  dentro ou imediatamente acima dela, um alerta "ENTRADA — RETESTE" pode
-  chegar sem aguardar o fecho da vela de 4h/1d. É MAIS RÁPIDO, mas também
-  PODE SER INVALIDADO ANTES DO FECHO. O Telegram identifica este risco.
-ENTRY_ON_LIVE_CANDLE=false:
-  Só avisa Entrada após o FECHO de uma vela que testou e recuperou a zona,
-  mais conservador, mas pode chegar horas depois do início do recuo.
-
-6) FILTROS E ENVIO DE ALERTAS
-Cada scan escreve latest_signals.json. O painel Streamlit lê o ficheiro
-em separado e permite filtrar RSI / Possível setup / Entrada.
-Cada ID enviado é guardado em sent_signals_divergence.json e não volta a ser
-alertado enquanto o ficheiro existir. Falhas de envio NÃO são assinaladas
-como enviadas, para permitir nova tentativa.
-
-7) COMO TESTAR ANTES DO DEPLOY
-pip install -r requirements.txt
-python -m unittest -v test_setups.py
-python rsi_divergence_bot.py --once
-
-Este último comando faz uma varredura real à MEXC se houver rede; pode enviar
-Telegram se as credenciais estiverem configuradas. O teste unittest NÃO
-faz pedidos à exchange, nem envia alertas; usa dados artificiais.
-
-Nos logs Render confirma:
-- "Scan iniciado"
-- "Pares líquidos selecionados"
-- "Scan concluído ... RSI= ... Breakout provável= ... Entradas= ..."
-- "Agregação de 1h..." caso existam timeframes sem suporte direto
-- "Duração"; se for >300s reduz pares/timeframes
-
-8) LIMITAÇÕES IMPORTANTES DA VERSÃO GRATUITA
-- O Render Free pode suspender/reiniciar processos. Não há SLA de scans exatos.
-- O armazenamento local é EFÉMERO: depois de reiniciar/redeploy,
-  latest_signals.json e sent_signals_divergence.json podem desaparecer.
-  Por isso, alertas recentes podem ser reenviados após reiniciar.
-- Não há equivalência garantida entre preços/gráficos TradingView e dados
-  da exchange via CCXT; os candles e o par precisam de corresponder.
-- Volume por preço é estimado de OHLCV, não um verdadeiro Volume Profile.
-- A estratégia é experimental. Validar visualmente setups reais e ajustar
-  critérios depois de uma amostra de vários dias/semanas.
-
-9) SEGURANÇA
-O código enviado inicialmente expôs o token Telegram. Revoga esse token no
-BotFather, cria um novo e guarda-o apenas no Environment do Render.
-Nunca guardes credenciais em código, ficheiros públicos ou no GitHub.
+NOTAS IMPORTANTES
+- Os timeframes 2h, 6h e 12h foram removidos por completo.
+- Divergências RSI de 2 pivots só contam em 4h e 1d.
+- Nos restantes timeframes, a divergência precisa de 3 ou mais pivots.
+- O alerta "Possível setup" e o alerta "Entrada" incluem imagem no Telegram.
+- O separador "Trades & win rate" usa um ficheiro local JSON; se o serviço Render reiniciar, esse histórico pode ser perdido.

@@ -1,8 +1,3 @@
-"""Executa o scanner e o painel no mesmo serviço web gratuito do Render.
-
-O Render só precisa de um Web Service. UptimeRobot mantém o serviço acordado;
-este supervisor mantém o scanner e o Streamlit a correr lado a lado.
-"""
 from __future__ import annotations
 
 import os
@@ -41,12 +36,8 @@ def _handle_signal(signum, _frame) -> None:
 
 
 def _start_scanner() -> subprocess.Popen:
-    print("A iniciar scanner RSI em background...", flush=True)
-    return subprocess.Popen(
-        [sys.executable, str(BASE_DIR / "rsi_divergence_bot.py")],
-        cwd=str(BASE_DIR),
-        env=os.environ.copy(),
-    )
+    print("A iniciar scanner em background...", flush=True)
+    return subprocess.Popen([sys.executable, str(BASE_DIR / "rsi_divergence_bot.py")], cwd=str(BASE_DIR), env=os.environ.copy())
 
 
 def main() -> int:
@@ -70,7 +61,6 @@ def main() -> int:
             if web_process.poll() is not None:
                 print(f"O Streamlit terminou com código {web_process.returncode}.", flush=True)
                 return int(web_process.returncode or 0)
-
             scanner = children["scanner"]
             if scanner.poll() is not None:
                 print(f"O scanner terminou com código {scanner.returncode}; a reiniciar em 5 segundos.", flush=True)

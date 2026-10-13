@@ -1,4 +1,3 @@
-"""Painel do scanner gratuito. Partilha latest_signals.json com scanner local."""
 from __future__ import annotations
 
 import json
@@ -10,121 +9,125 @@ import streamlit as st
 
 BASE_DIR = Path(__file__).resolve().parent
 LATEST_FILE = Path(os.getenv("LATEST_FILE", str(BASE_DIR / "latest_signals.json")))
+TRADES_FILE = Path(os.getenv("TRADES_FILE", str(BASE_DIR / "trades_history.json")))
 
-st.set_page_config(page_title="RSI + Rompimentos | Scanner", page_icon="📈", layout="wide")
-st.title("📈 RSI Divergências & Rompimentos de Resistência")
-st.caption("Apenas MEXC/Binance Spot USDT. Um único serviço Render, sem base de dados. Atualização do painel a cada 30 segundos.")
+st.set_page_config(page_title="Scanner RSI + Breakouts", page_icon="📊", layout="wide")
+st.title("📊 Scanner RSI + Breakouts")
+st.caption("Divergências RSI por highs/lows absolutos e setups de rompimento/reteste em 4h e 1d.")
 
 
-def _latest() -> dict | None:
+def read_json(path: Path):
     try:
-        if not LATEST_FILE.exists():
+        if not path.exists():
             return None
-        return json.loads(LATEST_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        st.error(f"Falha na leitura da última análise: {exc}")
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        st.error(f"Não foi possível ler {path.name}: {exc}")
         return None
 
 
-def _number(value, default=0.0):
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
 @st.fragment(run_every="30s")
-def mostrar():
-    data = _latest()
-    if data is None:
-        st.info("A aguardar a primeira varredura automática. Consulta os logs do Render se a espera for prolongada.")
+def render() -> None:
+    payload = read_json(LATEST_FILE)
+    trades_payload = read_json(TRADES_FILE) or {"trades": []}
+    trades = trades_payload.get("trades", []) if isinstance(trades_payload, dict) else []
+
+    if payload is None:
+        st.info("O scanner ainda está a arrancar. Aguarda o primeiro scan.")
         return
 
-    a, b, c, d, e = st.columns(5)
-    a.metric("Divergências RSI", data.get("rsi_count", 0))
-    b.metric("Possíveis setups", data.get("breakout_possible_count", 0))
-    c.metric("Entradas em reteste", data.get("breakout_entry_count", 0))
-    d.metric("Pares analisados", data.get("symbols_scanned", 0))
-    e.metric("Erros", data.get("errors", 0))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Sinais recentes", int(payload.get("signals_count", 0)))
+    c2.metric("Pares verificados", int(payload.get("symbols_scanned", 0)))
+    c3.metric("OHLCV OK", int(payload.get("ohlcv_requests_ok", 0)))
+    c4.metric("Erros API", int(payload.get("errors", 0)))
+
     st.caption(
-        f"Exchange: {data.get('exchange', '?')} | Último scan: {data.get('scan_completed_at', '?')} "
-        f"| Duração: {data.get('scan_seconds', '?')} segundos | OHLCV OK: {data.get('ohlcv_requests_ok', 0)}"
+        f"Exchange: {payload.get('exchange', '?')} · Último scan: {payload.get('scan_completed_at', '?')} · "
+        f"Duração: {payload.get('scan_seconds', '?')} s"
     )
-    st.caption("Timeframes realmente analisados: " + ", ".join(data.get("timeframes", [])))
+    st.caption("Timeframes ativos: " + ", ".join(payload.get("timeframes", [])))
 
-    with st.expander("Regras em vigor / Configuração"):
-        st.markdown(
-            "**RSI:** ≥3 pivots em todos os timeframes; 2 pivots apenas em 4h e 1d. "
-            "**Rompimentos:** apenas em 4h e 1d, nível historicamente testado "
-            "com evidência de volume alto, rompimento com volume, sustentação e reteste. "
-            "O perfil de volume é estimado com OHLCV e não equivale ao volume real por preço."
-        )
-        st.json(data.get("configuration", {}))
+    tab1, tab2, tab3 = st.tabs(["Sinais atuais", "Trades & win rate", "Configuração"])
 
-    options = ("Todos", "Divergências RSI", "Possível setup", "Entrada")
-    kind = st.radio("Filtrar sinais", options, horizontal=True)
-    signals = data.get("signals", [])
-    if kind == "Divergências RSI":
-        signals = [s for s in signals if s.get("categoria") == "rsi"]
-    elif kind in ("Possível setup", "Entrada"):
-        signals = [s for s in signals if s.get("fase") == kind]
-    if not signals:
-        st.info("Nenhum sinal recente corresponde ao filtro. Os padrões são avaliados com as velas fechadas, exceto o reteste intrabar opcional.")
-        return
+    with tab1:
+        signals = payload.get("signals", [])
+        if not signals:
+            st.info("Sem sinais recentes neste scan.")
+        for signal in signals:
+            categoria = signal.get("categoria")
+            if categoria == "rsi_divergence":
+                icon = "🔻" if signal.get("tipo") == "bearish" else "🟢"
+                title = f"{icon} {signal.get('symbol')} · {signal.get('timeframe')} · RSI {signal.get('tipo', '').upper()}"
+                with st.container(border=True):
+                    st.subheader(title)
+                    st.caption(f"{signal.get('pivots_count')} pivots · {signal.get('descricao_padrao')} · Confirmada: {signal.get('signal_time')}")
+                    prices = [float(p['price']) for p in signal.get('pivots', [])]
+                    rsis = [float(p['rsi']) for p in signal.get('pivots', [])]
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Preço", " → ".join(f"{x:.8g}" for x in prices))
+                    m2.metric("RSI", " → ".join(f"{x:.1f}" for x in rsis))
+                    m3.metric("Var. preço", f"{signal.get('variacao_preco_pct', 0):+.2f}%")
+                    m4.metric("Var. RSI", f"{signal.get('variacao_rsi', 0):+.2f}")
+                    rows = []
+                    for i, p in enumerate(signal.get("pivots", []), start=1):
+                        rows.append({
+                            "Pivot": i,
+                            "Data preço": p.get("price_time"),
+                            "Preço": p.get("price"),
+                            "RSI": p.get("rsi"),
+                        })
+                    if rows:
+                        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            elif categoria == "breakout":
+                icon = "🚀" if signal.get("fase") == "Possível setup" else "🎯"
+                title = f"{icon} {signal.get('symbol')} · {signal.get('timeframe')} · {signal.get('fase')}"
+                with st.container(border=True):
+                    st.subheader(title)
+                    st.caption(f"Zona {signal.get('zona_min'):.8g} - {signal.get('zona_max'):.8g} · Confirmado: {signal.get('signal_time')}")
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Nível", f"{signal.get('nivel', 0):.8g}")
+                    m2.metric("Toques", int(signal.get('toques_resistencia', 0)))
+                    m3.metric("Vol. zona", f"{signal.get('volume_zona_ratio', 0)}x")
+                    m4.metric("Vol. rompimento", f"{signal.get('volume_rompimento_ratio', 0)}x")
+                    if signal.get("trade"):
+                        trade = signal["trade"]
+                        st.markdown(
+                            f"**Sugestão de trade:** entrada `{trade['entry']:.8g}` · SL `{trade['sl']:.8g}` · TP `{trade['tp']:.8g}` · RR `2:1`"
+                        )
 
-    for s in signals:
-        symbol = s.get("symbol", "?")
-        tf = s.get("timeframe", "?")
-        when = s.get("signal_time", "?")
-        if s.get("categoria") == "breakout":
-            phase = s.get("fase", "?")
-            emoji = "🚀" if phase == "Possível setup" else "🎯"
-            with st.container(border=True):
-                st.markdown(f"#### {emoji} {phase} — {symbol} · {tf}")
-                st.caption(
-                    f"{when} | Breakout: {s.get('breakout_time', '?')} | "
-                    f"{'Reteste de vela ABERTA (pode invalidar)' if s.get('intrabar') else 'Velas confirmadas'}"
-                )
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Resistência", f"{_number(s.get('nivel')):.8g}")
-                c2.metric("Zona mínima", f"{_number(s.get('zona_min')):.8g}")
-                c3.metric("Zona máxima", f"{_number(s.get('zona_max')):.8g}")
-                c4.metric("Preço observado", f"{_number(s.get('preco_atual')):.8g}")
-                st.markdown(
-                    f"**Testes prévios:** {s.get('toques_resistencia', '?')} · "
-                    f"**Volume da zona:** {_number(s.get('volume_zona_ratio')):.2f}× · "
-                    f"**Volume do rompimento:** {_number(s.get('volume_rompimento_ratio')):.2f}× · "
-                    f"**Sustentação:** {s.get('velas_sustentacao', '?')} velas fechadas"
-                )
-                if phase == "Possível setup":
-                    st.info("Nível rompido e sustentado. Aguardar preço regressar à zona; ainda não é alerta de entrada.")
-                elif s.get("intrabar"):
-                    st.warning("Reteste detetado com vela ainda aberta. Se a vela quebrar a zona, o padrão poderá ser invalidado.")
-                else:
-                    st.success("Preço regressou à zona e recuperou o nível no fecho da vela de reteste.")
+    with tab2:
+        trades_df = pd.DataFrame(trades)
+        if trades_df.empty:
+            st.info("Ainda não existem trades registadas.")
         else:
-            icon = "🟢" if s.get("tipo") == "bullish" else "🔻"
-            with st.container(border=True):
-                st.markdown(f"#### {icon} RSI {s.get('tipo', '?').upper()} — {symbol} · {tf} · {s.get('pivots_count', 0)} pivots")
-                st.caption(f"Pivô confirmado: {when} | Idade: {s.get('idade_velas', '?')} vela(s)")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Preço inicial", f"{_number(s.get('preco_inicial')):.8g}")
-                c2.metric("Preço final", f"{_number(s.get('preco_final')):.8g}")
-                c3.metric("RSI inicial", f"{_number(s.get('rsi_inicial')):.2f}")
-                c4.metric("RSI final", f"{_number(s.get('rsi_final')):.2f}")
-                if s.get("pivots"):
-                    st.dataframe(pd.DataFrame([
-                        {"N.º": i, "Data pivot preço": p.get("price_time"),
-                         "Preço": p.get("price"), "RSI": p.get("rsi"),
-                         "Data pivot RSI": p.get("rsi_time")}
-                        for i, p in enumerate(s["pivots"], start=1)
-                    ]), hide_index=True, use_container_width=True)
+            closed = trades_df[trades_df["status"].isin(["Ganha", "Perdida"])].copy()
+            wins = int((closed["status"] == "Ganha").sum())
+            losses = int((closed["status"] == "Perdida").sum())
+            total_closed = len(closed)
+            win_rate = (wins / total_closed * 100.0) if total_closed else 0.0
+            em_curso = int((trades_df["status"] == "Em curso").sum())
 
-    st.divider()
-    st.caption(
-        "Ferramenta experimental de análise de mercado. Alertas são padrões técnicos, não ordens de compra. "
-        "O ficheiro local de sinais/alertas não é persistente após reinício ou redeploy do Render gratuito."
-    )
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Trades fechadas", total_closed)
+            c2.metric("Win rate", f"{win_rate:.1f}%")
+            c3.metric("Ganhos", wins)
+            c4.metric("Em curso", em_curso)
+
+            recent = trades_df.sort_values(by="opened_at_ms", ascending=False).copy()
+            show_cols = [
+                "symbol", "timeframe", "entrada", "sl", "tp", "status",
+                "opened_at", "closed_at", "resultado_r"
+            ]
+            for col in show_cols:
+                if col not in recent.columns:
+                    recent[col] = None
+            st.subheader("Trades recentes")
+            st.dataframe(recent[show_cols], hide_index=True, use_container_width=True)
+
+    with tab3:
+        st.json(payload.get("configuration", {}))
+        st.caption("Notas: 2h, 6h e 12h foram excluídos. Divergências de 2 pivots só são aceites em 4h e 1d.")
 
 
-mostrar()
+render()
