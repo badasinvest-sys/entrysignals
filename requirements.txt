@@ -1,7 +1,6 @@
-ccxt
-numpy
-pandas
-scipy
-requests
-streamlit
-psycopg[binary]
+ccxt>=4.4
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+requests>=2.31
+streamlit>=1.37

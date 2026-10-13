@@ -1,0 +1,7 @@
+latest_signals.json
+latest_signals.json.tmp
+sent_signals_divergence.json
+sent_signals_divergence.json.tmp
+__pycache__/
+*.pyc
+.env

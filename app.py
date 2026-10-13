@@ -1,87 +1,109 @@
-"""Painel Streamlit para visualizar os sinais produzidos por rsi_divergence_bot.py."""
+"""Painel Streamlit para os sinais RSI escritos pelo scanner local."""
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
-from datetime import datetime, timezone
 
+import pandas as pd
 import streamlit as st
 
 BASE_DIR = Path(__file__).resolve().parent
 LATEST_FILE = Path(os.getenv("LATEST_FILE", str(BASE_DIR / "latest_signals.json")))
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-st.set_page_config(page_title="Crypto RSI Divergences", layout="wide")
-st.title("⚡ Crypto RSI Divergences")
-st.caption("O scanner é executado pelo serviço Background Worker do Render. Este painel lê os resultados do último scan.")
+st.set_page_config(page_title="Crypto RSI Divergences", page_icon="📈", layout="wide")
+st.title("📈 Crypto RSI Divergences")
+st.caption(
+    "Deteção de divergências regulares RSI bullish/bearish. Nesta fase, o alerta identifica o padrão; "
+    "não tenta decidir se já existe uma entrada válida."
+)
 
 
-def read_latest():
+def read_latest() -> dict | None:
     try:
-        if DATABASE_URL:
-            import psycopg
-            with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT to_regclass('public.rsi_divergence_store')")
-                    exists = cur.fetchone()[0]
-                    if not exists:
-                        return None
-                    cur.execute("SELECT value FROM rsi_divergence_store WHERE key = %s", ("latest_scan",))
-                    row = cur.fetchone()
-                    return row[0] if row else None
         if not LATEST_FILE.exists():
             return None
-        with LATEST_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        with LATEST_FILE.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
     except Exception as exc:
         st.error(f"Não foi possível ler os resultados do scanner: {exc}")
         return None
 
 
-if st.button("🔄 Atualizar painel"):
-    st.rerun()
+@st.fragment(run_every="30s")
+def mostrar_resultados() -> None:
+    payload = read_latest()
+    if payload is None:
+        st.info(
+            "O scanner está a iniciar a primeira varredura. Aguarda um pouco e este painel atualiza automaticamente. "
+            "Confirma os logs do Render se isto não mudar."
+        )
+        return
 
-payload = read_latest()
-if payload is None:
-    st.warning("Ainda não existem resultados. Confirma se o Background Worker está ativo e executa `python rsi_divergence_bot.py --once` para testar.")
-    st.stop()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Divergências recentes", int(payload.get("signals_count", 0)))
+    c2.metric("Pares verificados", int(payload.get("symbols_scanned", 0)))
+    c3.metric("Pedidos OHLCV OK", int(payload.get("ohlcv_requests_ok", 0)))
+    c4.metric("Erros de mercado/API", int(payload.get("errors", 0)))
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Divergências na última varredura", int(payload.get("signals_count", 0)))
-col2.metric("Pares analisados", int(payload.get("symbols_scanned", 0)))
-col3.metric("Pedidos OHLCV OK", int(payload.get("ohlcv_requests_ok", 0)))
-col4.metric("Erros de API/dados", int(payload.get("errors", 0)))
-
-st.caption(f"Último scan concluído: {payload.get('scan_completed_at', 'desconhecido')}")
-st.caption("Timeframes: " + ", ".join(payload.get("timeframes", [])))
-
-signals = payload.get("signals", [])
-if not signals:
-    st.info("Não foram confirmadas divergências recentes neste scan. Isto não significa necessariamente um erro: os pivots têm de estar confirmados.")
-    st.stop()
-
-# Agrupar sem eliminar sinais de outros timeframes para a mesma moeda.
-for signal in signals:
-    bullish = signal.get("tipo") == "bullish"
-    colour = "#1b8f4d" if bullish else "#b83232"
-    arrow = "🟢" if bullish else "🔻"
-    st.markdown(
-        f"""
-        <div style="background:#1e1e24;border-radius:10px;padding:14px 16px;margin:0 0 12px 0;border-left:5px solid {colour};">
-          <div style="font-size:18px;font-weight:700;">{arrow} {signal.get('symbol', '?')} — {signal.get('timeframe', '?')} — RSI {signal.get('tipo', '').upper()}</div>
-          <div style="color:#c7c7d1;margin-top:4px;">Pivot: {signal.get('signal_time', '?')} | Idade: {signal.get('idade_velas', '?')} vela(s)</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    a, b, c, d = st.columns(4)
-    a.metric("Entrada indicativa", f"{float(signal.get('entry', 0)):.8g}")
-    b.metric("Stop indicativo", f"{float(signal.get('sl', 0)):.8g}")
-    c.metric("Target indicativo (2R)", f"{float(signal.get('tp', 0)):.8g}")
-    d.metric("RSI: anterior → atual", f"{signal.get('rsi_anterior', '?')} → {signal.get('rsi_atual', '?')}")
     st.caption(
-        f"Preço no pivot: {float(signal.get('preco_pivot_anterior', 0)):.8g} → "
-        f"{float(signal.get('preco_pivot_atual', 0)):.8g} | Pivot anterior: {signal.get('previous_pivot_time', '?')}"
+        f"Exchange: {payload.get('exchange', '?')} · Último scan: {payload.get('scan_completed_at', '?')} · "
+        f"Duração: {payload.get('scan_seconds', '?')} s"
+    )
+    st.caption("Timeframes: " + ", ".join(payload.get("timeframes", [])))
+
+    config = payload.get("configuration", {})
+    with st.expander("Parâmetros de deteção atuais"):
+        st.json(config)
+
+    signals = payload.get("signals", [])
+    if not signals:
+        st.info(
+            "Não foram confirmadas divergências recentes neste scan. Isso pode significar que não há um padrão "
+            "que cumpra os limiares, e não necessariamente que o scanner falhou. Consulta os logs para confirmar "
+            "que os pedidos OHLCV estão a funcionar."
+        )
+        return
+
+    for signal in signals:
+        bullish = signal.get("tipo") == "bullish"
+        icon = "🟢" if bullish else "🔻"
+        title = (
+            f"{icon} {signal.get('symbol', '?')} · {signal.get('timeframe', '?')} · "
+            f"{signal.get('tipo', '').upper()} · {signal.get('pivots_count', 2)} pivots"
+        )
+        with st.container(border=True):
+            st.subheader(title)
+            st.caption(
+                f"{signal.get('forca_padrao', 'Clássica')} — {signal.get('descricao_padrao', '')} · "
+                f"Pivot confirmado: {signal.get('signal_time', '?')} · "
+                f"Idade: {signal.get('idade_velas', '?')} vela(s)"
+            )
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Preço inicial → final", f"{signal.get('preco_inicial', 0):.8g} → {signal.get('preco_final', 0):.8g}")
+            m2.metric("RSI inicial → final", f"{signal.get('rsi_inicial', 0):.2f} → {signal.get('rsi_final', 0):.2f}")
+            m3.metric("Variação do preço", f"{signal.get('variacao_preco_pct', 0):+.3f}%")
+            m4.metric("Variação do RSI", f"{signal.get('variacao_rsi', 0):+.2f}")
+
+            pivots = signal.get("pivots", [])
+            if pivots:
+                table_rows = []
+                for number, pivot in enumerate(pivots, start=1):
+                    table_rows.append({
+                        "Pivot": number,
+                        "Data do extremo de preço": pivot.get("price_time", "?"),
+                        "Preço": float(pivot.get("price", 0.0)),
+                        "RSI": float(pivot.get("rsi", 0.0)),
+                        "Data do extremo RSI": pivot.get("rsi_time", "?"),
+                    })
+                st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+    st.divider()
+    st.caption(
+        "Definição usada: bearish = máximo mais alto no preço + máximo mais baixo no RSI; "
+        "bullish = mínimo mais baixo no preço + mínimo mais alto no RSI. Padrões com 3 ou mais pivots "
+        "só são classificados como multi-pivot se as pernas intermédias mantiverem a mesma direção."
     )
 
-st.divider()
-st.caption("Os sinais são padrões técnicos sujeitos a falsos positivos; entrada, stop e alvo são indicativos e não constituem aconselhamento financeiro.")
+
+mostrar_resultados()
