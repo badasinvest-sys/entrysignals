@@ -44,7 +44,7 @@ PIVOT_MATCH_RADIUS = max(1, int(os.getenv("PIVOT_MATCH_RADIUS", "3")))
 MIN_PIVOT_SEPARATION = max(2, int(os.getenv("MIN_PIVOT_SEPARATION", "5")))
 MAX_PIVOT_SEPARATION = max(MIN_PIVOT_SEPARATION + 1, int(os.getenv("MAX_PIVOT_SEPARATION", "80")))
 MAX_PIVOTS_IN_PATTERN = max(2, min(6, int(os.getenv("MAX_PIVOTS_IN_PATTERN", "4"))))
-TIMEFRAMES = [x.strip() for x in os.getenv("TIMEFRAMES", "15m,30m,1h,4h").split(",") if x.strip()]
+TIMEFRAMES = [x.strip() for x in os.getenv("TIMEFRAMES", "1h,2h,4h,6h,12h,1d").split(",") if x.strip()]
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
