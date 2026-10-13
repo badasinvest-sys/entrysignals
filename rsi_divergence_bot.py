@@ -43,7 +43,8 @@ RSI_PIVOT_PROMINENCE = max(0.1, float(os.getenv("RSI_PIVOT_PROMINENCE", "2.0")))
 PIVOT_MATCH_RADIUS = max(1, int(os.getenv("PIVOT_MATCH_RADIUS", "3")))
 MIN_PIVOT_SEPARATION = max(2, int(os.getenv("MIN_PIVOT_SEPARATION", "5")))
 MAX_PIVOT_SEPARATION = max(MIN_PIVOT_SEPARATION + 1, int(os.getenv("MAX_PIVOT_SEPARATION", "80")))
-MAX_PIVOTS_IN_PATTERN = max(2, min(6, int(os.getenv("MAX_PIVOTS_IN_PATTERN", "4"))))
+# Alterado o mínimo estrito para 3 pivots
+MAX_PIVOTS_IN_PATTERN = max(3, min(6, int(os.getenv("MAX_PIVOTS_IN_PATTERN", "4"))))
 TIMEFRAMES = [x.strip() for x in os.getenv("TIMEFRAMES", "1h,2h,4h,6h,12h,1d").split(",") if x.strip()]
 
 logging.basicConfig(
@@ -82,12 +83,10 @@ def read_sent_ids() -> set[str]:
 
 
 def save_sent_ids(sent_ids: set[str]) -> None:
-    # A lista é limitada para o ficheiro local não crescer sem controlo.
     write_json_atomic(SENT_FILE, sorted(sent_ids)[-15000:])
 
 
 def calcular_rsi(closes: np.ndarray | list[float], period: int = 14) -> np.ndarray:
-    """RSI de Wilder com alinhamento correto; valores iniciais indefinidos ficam NaN."""
     prices = np.asarray(closes, dtype=float)
     result = np.full(prices.size, np.nan, dtype=float)
     if prices.size <= period or period < 2:
@@ -123,11 +122,6 @@ def _build_swings(
     rsi: np.ndarray,
     direction: str,
 ) -> list[dict[str, Any]]:
-    """Liga cada pivot do RSI ao extremo de preço mais relevante numa janela próxima.
-
-    Isto evita exigir que o topo/fundo do preço ocorra exatamente na mesma vela
-    do topo/fundo do RSI, que era uma das limitações do código original.
-    """
     first_valid = np.flatnonzero(np.isfinite(rsi))
     if first_valid.size == 0:
         return []
@@ -170,8 +164,6 @@ def _build_swings(
             "rsi_is_top": rsi_is_top,
         })
 
-    # Se dois pivots do RSI apontam para o mesmo extremo de preço, conserva-se
-    # aquele que está temporalmente mais perto; em empate, o de maior proeminência.
     by_price_index: dict[int, dict[str, Any]] = {}
     for item in candidates:
         old = by_price_index.get(item["price_idx"])
@@ -183,7 +175,6 @@ def _build_swings(
             by_price_index[item["price_idx"]] = item
 
     ordered = sorted(by_price_index.values(), key=lambda x: (x["confirm_idx"], x["price_idx"]))
-    # Evita swings duplicados ou fora de ordem temporal por causa da janela de associação.
     result: list[dict[str, Any]] = []
     for item in ordered:
         if result and item["price_idx"] <= result[-1]["price_idx"]:
@@ -205,7 +196,6 @@ def _direct_divergence(first: dict[str, Any], last: dict[str, Any], kind: str) -
 
 
 def _divergent_leg(first: dict[str, Any], last: dict[str, Any], kind: str) -> bool:
-    """Teste menos rígido usado apenas para contar pivots consecutivos do mesmo setup."""
     soft_price_threshold = max(MIN_PRICE_DIFFERENCE_PCT * 0.20, 0.0001)
     soft_rsi_threshold = max(MIN_RSI_DIFFERENCE * 0.25, 0.5)
     if kind == "bearish":
@@ -233,20 +223,11 @@ def detetar_divergencias_rsi(
     timeframe: str,
     max_age_bars: int = MAX_SIGNAL_AGE_BARS,
 ) -> list[dict[str, Any]]:
-    """Deteta divergências regulares e permite padrões com 2 a 4 pivots.
-
-    Bearish: preço HH (higher high) + RSI LH (lower high).
-    Bullish: preço LL (lower low) + RSI HL (higher low).
-
-    Para contar 3+ pivots, os swings intermédios também têm de manter a direção
-    da divergência. Se isso não acontecer, ainda é aceite a divergência clássica
-    de dois pivots quando os extremos inicial/final cumprem os limiares.
-    """
+    """Deteta estritamente padrões multi-pivot (3 ou mais pivots consistentes)."""
     needed = {"timestamp", "high", "low", "close"}
     if len(df) < max(40, RSI_PERIOD + 10) or not needed.issubset(df.columns):
         return []
     data = df.reset_index(drop=True).copy()
-    # A coluna RSI é útil para testes controlados; no scanner real é sempre calculada abaixo.
     rsi = (
         data["rsi"].to_numpy(dtype=float)
         if "rsi" in data.columns
@@ -259,42 +240,47 @@ def detetar_divergencias_rsi(
     detected: list[dict[str, Any]] = []
     for kind in ("bearish", "bullish"):
         swings = _build_swings(data, rsi, kind)
-        if len(swings) < 2:
+        if len(swings) < 3:  # Exige no mínimo 3 swings no total detetados
             continue
 
-        # Só alertamos sobre a divergência mais recente e ainda útil neste timeframe.
         found_for_kind: dict[str, Any] | None = None
-        for end_idx in range(len(swings) - 1, 0, -1):
+        for end_idx in range(len(swings) - 1, 1, -1):
             endpoint = swings[end_idx]
             age = latest_closed_idx - endpoint["confirm_idx"]
             if age > max_age_bars:
                 break
             candidate_patterns: list[tuple[tuple[float, ...], list[dict[str, Any]]]] = []
 
-            for start_idx in range(end_idx - 1, -1, -1):
+            for start_idx in range(end_idx - 2, -1, -1):
                 first = swings[start_idx]
                 distance = endpoint["price_idx"] - first["price_idx"]
                 if distance > MAX_PIVOT_SEPARATION:
                     break
                 if distance < MIN_PIVOT_SEPARATION:
                     continue
-                if not _direct_divergence(first, endpoint, kind):
-                    continue
 
                 path = swings[start_idx:end_idx + 1]
-                # Contar múltiplos pivots só quando cada perna sucessiva confirma
-                # a mesma direção; caso contrário, classificar como divergência de 2 pivots.
+                
+                # Exigir estritamente 3 ou mais pivots no intervalo
+                if len(path) < 3:
+                    continue
+
+                # Cada perna sucessiva tem de manter a direção da divergência
                 consistent = all(
                     _divergent_leg(path[k], path[k + 1], kind)
                     for k in range(len(path) - 1)
                 )
-                chosen = path[-MAX_PIVOTS_IN_PATTERN:] if consistent else [first, endpoint]
-                if len(chosen) > MAX_PIVOTS_IN_PATTERN:
-                    chosen = chosen[-MAX_PIVOTS_IN_PATTERN:]
-                # Não chamar multi-pivot se o recorte não conservar a diferença
-                # mínima exigida entre o primeiro e o último pivot.
-                if len(chosen) >= 3 and not _direct_divergence(chosen[0], chosen[-1], kind):
-                    chosen = [first, endpoint]
+                if not consistent:
+                    continue
+
+                chosen = path[-MAX_PIVOTS_IN_PATTERN:]
+                if len(chosen) < 3:
+                    continue
+
+                # O primeiro e o último pivot do padrão escolhido têm de cumprir a divergência direta
+                if not _direct_divergence(chosen[0], chosen[-1], kind):
+                    continue
+
                 rsi_delta = abs(float(chosen[-1]["rsi"]) - float(chosen[0]["rsi"]))
                 price_delta_pct = abs(float(chosen[-1]["price"]) / float(chosen[0]["price"]) - 1.0)
                 score = (float(len(chosen)), rsi_delta, price_delta_pct, -float(distance))
@@ -303,10 +289,10 @@ def detetar_divergencias_rsi(
             if candidate_patterns:
                 candidate_patterns.sort(key=lambda x: x[0], reverse=True)
                 chosen = candidate_patterns[0][1]
-                # Após limitar a sequência ao número configurado de pivots,
-                # garante que o par inicial/final continua a cumprir os limiares.
-                if not _direct_divergence(chosen[0], chosen[-1], kind):
-                    chosen = [candidate_patterns[0][1][0], candidate_patterns[0][1][-1]]
+
+                if len(chosen) < 3 or not _direct_divergence(chosen[0], chosen[-1], kind):
+                    continue
+
                 timestamps = data["timestamp"].to_numpy(dtype=np.int64)
                 final = chosen[-1]
                 signal_idx = int(final["confirm_idx"])
@@ -314,10 +300,12 @@ def detetar_divergencias_rsi(
                 start_point = chosen[0]
                 price_change_pct = (final["price"] / start_point["price"] - 1.0) * 100.0
                 rsi_change = final["rsi"] - start_point["rsi"]
+                
                 if kind == "bearish":
-                    description = "Preço HH + RSI LH"
+                    description = "Preço HH + RSI LH (Multi-pivot estrito)"
                 else:
-                    description = "Preço LL + RSI HL"
+                    description = "Preço LL + RSI HL (Multi-pivot estrito)"
+
                 detected.append({
                     "id": f"{timeframe}_{kind}_{signal_ms}",
                     "tipo": kind,
@@ -327,7 +315,7 @@ def detetar_divergencias_rsi(
                     "signal_time": iso_from_ms(signal_ms),
                     "idade_velas": int(latest_closed_idx - signal_idx),
                     "pivots_count": len(chosen),
-                    "forca_padrao": "Multi-pivot" if len(chosen) >= 3 else "Clássica (2 pivots)",
+                    "forca_padrao": "Multi-pivot Estrito",
                     "descricao_padrao": description,
                     "preco_inicial": float(start_point["price"]),
                     "preco_final": float(final["price"]),
@@ -339,7 +327,7 @@ def detetar_divergencias_rsi(
                 })
                 found_for_kind = detected[-1]
                 break
-        # Encontrar no máximo um sinal recente de cada direção por par/timeframe.
+
         if found_for_kind is None:
             continue
     return detected
@@ -408,7 +396,7 @@ def formatar_alerta(signal: dict[str, Any]) -> str:
         lines.append(
             f"{index}) preço {float(point['price']):.8g} | RSI {float(point['rsi']):.2f} | {point['price_time']}"
         )
-    lines.append("Alerta de divergência, não é confirmação de entrada. A lógica de entrada será definida numa fase posterior.")
+    lines.append("Alerta de divergência multi-pivot estrita, não é confirmação de entrada.")
     return "\n".join(lines)
 
 
@@ -462,7 +450,6 @@ def executar_scan() -> dict[str, Any]:
                         raw,
                         columns=["timestamp", "open", "high", "low", "close", "volume"],
                     )
-                    # Remove sempre a última vela, que ainda pode estar em formação.
                     df = df.iloc[:-1].reset_index(drop=True)
                     if len(df) < max(40, RSI_PERIOD + 10):
                         continue
@@ -487,7 +474,6 @@ def executar_scan() -> dict[str, Any]:
         except Exception:
             pass
 
-    # Deduplica sinais que partilhem o mesmo pivot, mantendo cada timeframe.
     unique = {signal["id"]: signal for signal in signals}
     signals = sorted(unique.values(), key=lambda item: item["signal_time_ms"], reverse=True)
     payload = {
@@ -531,8 +517,6 @@ def executar_scan() -> dict[str, Any]:
         "Scan concluído | pares=%d | pedidos OHLCV OK=%d | pares/timeframes=%d | erros=%d | divergências=%d | novos alertas=%d | duração=%.1fs",
         len(symbols), ohlcv_ok, pair_timeframes_processed, errors, len(signals), new_alerts, payload["scan_seconds"],
     )
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        log.warning("Os sinais são gravados, mas os alertas Telegram estão desativados por falta de credenciais.")
     if payload["scan_seconds"] > SCAN_INTERVAL_SECONDS:
         log.warning("A varredura demorou mais do que o intervalo configurado (%ds). Reduz SCAN_TOP_N ou TIMEFRAMES.", SCAN_INTERVAL_SECONDS)
     return payload
