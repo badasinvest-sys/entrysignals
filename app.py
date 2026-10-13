@@ -55,7 +55,7 @@ st.markdown("""
 
 st.title("⚡ Crypto RSI Divergence & AI Vision Bot (24/7)")
 
-SENT_FILE = "sent_signals_divergence_v2.json"
+SENT_FILE = "sent_signals_divergence_v3.json"
 
 def carregar_sinais_enviados():
     if os.path.exists(SENT_FILE):
@@ -85,7 +85,7 @@ else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Modo Autónomo:** Varrimento de 20 dias em 15m, 30m, 1h, 2h, 4h, 6h, 12h e 1d (Bullish & Bearish).")
+st.sidebar.info("💡 **Modo Autónomo:** Varrimento de 20 dias em 15m a 1d (Divergências Bearish & Bullish flexíveis).")
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price, tipo):
     try:
@@ -207,25 +207,28 @@ def detetar_divergencia_rsi(df):
         lows = df['low'].values
         rsi = df['rsi'].values
 
-        # 1. Procurar Picos Bearish (Máximos)
+        # 1. Procurar Picos Bearish (Máximos locais flexíveis)
         picos_idx = []
-        for i in range(2, len(df) - 1):
-            if highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and highs[i] >= highs[i-2] and highs[i] >= highs[i+2]:
+        for i in range(3, len(df) - 3):
+            if (highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and 
+                highs[i] >= highs[i-2] and highs[i] >= highs[i+2]):
                 picos_idx.append(i)
 
-        if len(picos_idx) >= 2:
-            for idx in range(len(picos_idx) - 1, 0, -1):
-                p1 = picos_idx[idx - 1]
-                p2 = picos_idx[idx]
+        # Testar combinações de picos (não apenas adjacentes)
+        for n in range(len(picos_idx) - 1, -1, -1):
+            p2 = picos_idx[n]
+            signal_time = pd.to_datetime(df['timestamp'].iloc[p2], unit='ms')
+            horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
+            if horas_atras > 480: # 20 dias
+                continue
 
-                signal_time = pd.to_datetime(df['timestamp'].iloc[p2], unit='ms')
-                horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
-                
-                if horas_atras > 480: # Limite de 20 dias atrás
+            for m in range(n - 1, -1, -1):
+                p1 = picos_idx[m]
+                if (p2 - p1) < 3 or (p2 - p1) > 120:
                     continue
 
-                preco_sobe = highs[p2] > highs[p1]
-                rsi_desce = rsi[p2] < rsi[p1] and rsi[p2] > 55
+                preco_sobe = highs[p2] > highs[p1] # Higher High
+                rsi_desce = rsi[p2] < rsi[p1] and rsi[p2] > 50 # Lower High
 
                 if preco_sobe and rsi_desce:
                     entry_price = closes[p2]
@@ -242,25 +245,27 @@ def detetar_divergencia_rsi(df):
                             "signal_time": signal_time
                         }
 
-        # 2. Procurar Fundos Bullish (Mínimos)
+        # 2. Procurar Fundos Bullish (Mínimos locais flexíveis)
         fundos_idx = []
-        for i in range(2, len(df) - 1):
-            if lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and lows[i] <= lows[i-2] and lows[i] <= lows[i+2]:
+        for i in range(3, len(df) - 3):
+            if (lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and 
+                lows[i] <= lows[i-2] and lows[i] <= lows[i+2]):
                 fundos_idx.append(i)
 
-        if len(fundos_idx) >= 2:
-            for idx in range(len(fundos_idx) - 1, 0, -1):
-                f1 = fundos_idx[idx - 1]
-                f2 = fundos_idx[idx]
+        for n in range(len(fundos_idx) - 1, -1, -1):
+            f2 = fundos_idx[n]
+            signal_time = pd.to_datetime(df['timestamp'].iloc[f2], unit='ms')
+            horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
+            if horas_atras > 480: # 20 dias
+                continue
 
-                signal_time = pd.to_datetime(df['timestamp'].iloc[f2], unit='ms')
-                horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
-                
-                if horas_atras > 480: # Limite de 20 dias atrás
+            for m in range(n - 1, -1, -1):
+                f1 = fundos_idx[m]
+                if (f2 - f1) < 3 or (f2 - f1) > 120:
                     continue
 
-                preco_desce = lows[f2] < lows[f1]
-                rsi_sobe = rsi[f2] > rsi[f1] and rsi[f2] < 45
+                preco_desce = lows[f2] < lows[f1] # Lower Low
+                rsi_sobe = rsi[f2] > rsi[f1] and rsi[f2] < 50 # Higher Low
 
                 if preco_desce and rsi_sobe:
                     entry_price = closes[f2]
@@ -356,7 +361,7 @@ def analisar_mercado_autonomo():
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return sinais_registados
 
-with st.spinner("A analisar Top 250 (Histórico de 20 dias, 15m a 1D, Bullish/Bearish)..."):
+with st.spinner("A analisar Top 250 (Histórico de 20 dias, picos flexíveis)..."):
     try:
         sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
@@ -365,7 +370,7 @@ with st.spinner("A analisar Top 250 (Histórico de 20 dias, 15m a 1D, Bullish/Be
             if st.session_state.get('forcar_teste', False):
                 trades_teste = sinais_registados[:2]
                 if not trades_teste:
-                    st.warning("Nenhuma divergência encontrada nos últimos 20 dias para teste.")
+                    st.warning("Nenhuma divergência encontrada para teste.")
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
