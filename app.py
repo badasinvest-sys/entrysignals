@@ -11,12 +11,17 @@ import io
 import gc
 import json
 import os
+from google import genai
+from google.genai import types
 
-# --- CREDENCIAIS DO TELEGRAM FIXAS E BLINDADAS ---
+# --- CREDENCIAIS DO TELEGRAM (Fixas) ---
 TELEGRAM_TOKEN = "8882729761:AAEyKB_DBGEgecNdlOgeYVVm_zNWh778vkE"
 TELEGRAM_CHAT_ID = "6311547341"
 
-st.set_page_config(page_title="Crypto SMC Bot (Top 250 & Multi-Timeframe)", layout="wide")
+# --- CHAVE DA IA (Lida com segurança das Variáveis de Ambiente do Render) ---
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+st.set_page_config(page_title="Crypto SMC & AI Bot (Top 250)", layout="wide")
 
 st.markdown("""
     <style>
@@ -25,14 +30,22 @@ st.markdown("""
         background-color: #1e1e24;
         border-radius: 10px;
         padding: 15px;
-        margin-bottom: 10px;
+        margin-bottom: 15px;
         border-left: 5px solid #ff5252;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    .ai-box {
+        background-color: #262630;
+        border-radius: 6px;
+        padding: 10px;
+        margin-top: 10px;
+        font-size: 13px;
+        border-left: 3px solid #00bcd4;
     }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto SMC & Divergence Bot (Automático 24/7)")
+st.title("⚡ Crypto SMC & AI Vision Bot (Automático 24/7)")
 
 SENT_FILE = "sent_signals_smc.json"
 
@@ -54,7 +67,7 @@ def guardar_sinal_enviado(signal_id):
     except Exception as e:
         print(f"Erro ao guardar sinal: {e}")
 
-st.sidebar.header("⚙️ Configurações do Bot")
+st.sidebar.header("⚙️ Configurações do Bot & IA")
 enviar_telegram = st.sidebar.checkbox("Ativar Alertas Automáticos no Telegram", value=True)
 
 if st.sidebar.button("🔄 Reenviar Alertas para Teste (Últimas 2)"):
@@ -64,7 +77,7 @@ else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Modo Totalmente Autónomo:** As credenciais do Telegram estão configuradas. O bot analisa o Top 250 nos timeframes **2h, 4h e 1d** de 5 em 5 minutos.")
+st.sidebar.info("💡 **Modo Totalmente Autónomo:** Chave de IA configurada de forma segura no Render. O bot analisa o Top 250 em **2h, 4h e 1d** de 5 em 5 minutos.")
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
     try:
@@ -75,7 +88,7 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
         mc = mpf.make_marketcolors(up='#4caf50', down='#ff5252', edge='inherit', wick='inherit', volume='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, facecolor='#1e1e24', edgecolor='none', gridstyle='none')
         
-        fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(3.5, 1.5), axisoff=True, returnfig=True)
+        fig, axes = mpf.plot(subset_df, type='candle', style=s, figsize=(4, 2), axisoff=True, returnfig=True)
         ax = axes[0]
         
         total_velas = len(subset_df)
@@ -97,7 +110,7 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
         ax.axhline(tp_price, color='#4caf50', linestyle=':', linewidth=1, alpha=0.9, zorder=4)
         
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=72)
+        fig.savefig(buf, format='png', facecolor='#1e1e24', edgecolor='none', bbox_inches='tight', dpi=100)
         buf.seek(0)
         
         image_bytes = buf.getvalue()
@@ -108,6 +121,34 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
         return image_bytes
     except Exception:
         return None
+
+def auditar_grafico_com_gemini(foto_bytes, symbol, tf, preco):
+    """Agente de IA treinado para pensar como um trader institucional SMC"""
+    if not GEMINI_API_KEY or foto_bytes is None:
+        return "Análise de IA pendente (Defina a variável GEMINI_API_KEY no Render)."
+    
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
+        prompt = (
+            f"És um analista trader institucional sênior especialista em SMC (Smart Money Concepts), "
+            f"Divergências de RSI e gestão de risco. Analisa este gráfico de {symbol} ({tf}) com entrada Short @ \${preco:.5f}. "
+            f"O retângulo vermelho representa o Risco (Stop Loss) e o verde representa o Alvo (Take Profit 2:1). "
+            f"Responde estritamente em duas linhas curtas e objetivas em Português: "
+            f"1) Avaliação da estrutura de preço e validação do sweep/divergência. "
+            f"2) Veredito final com emoji (ex: Aprovado ✅ ou Cuidado ⚠️)."
+        )
+        
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                prompt,
+                types.Part.from_bytes(data=foto_bytes, mime_type="image/png"),
+            ],
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"Erro na IA: {e}"
 
 def enviar_alerta_telegram_com_foto(caption, foto_bytes):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or foto_bytes is None:
@@ -227,6 +268,9 @@ def analisar_mercado_autonomo():
                         
                         foto_bytes = gerar_grafico_mini(df, setup['entry'], setup['sl'], setup['tp'])
                         
+                        # Auditoria pelo Agente de IA Gemini
+                        parecer_ia = auditar_grafico_com_gemini(foto_bytes, nome_moeda, tf, setup['entry'])
+                        
                         sinais_registados.append({
                             "id": signal_id,
                             "moeda": nome_moeda,
@@ -235,7 +279,8 @@ def analisar_mercado_autonomo():
                             "status": setup['status'],
                             "horas": max(0, horas_atras),
                             "data": data_formatada,
-                            "foto": foto_bytes
+                            "foto": foto_bytes,
+                            "parecer_ia": parecer_ia
                         })
                 except Exception:
                     continue
@@ -245,7 +290,7 @@ def analisar_mercado_autonomo():
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return sinais_registados
 
-with st.spinner("A analisar Top 250 em Multi-Timeframe (2h, 4h, 1d) por Divergências e SMC..."):
+with st.spinner("A analisar Top 250 em Multi-Timeframe e a auditar com IA..."):
     try:
         sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
@@ -258,21 +303,22 @@ with st.spinner("A analisar Top 250 em Multi-Timeframe (2h, 4h, 1d) por Divergê
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
-                            f"🧪 *[TESTE SMC]* 🔻 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
-                            f"Divergência Tripla + Sweep @ `${s['preco']:.5f}`\n"
-                            f"Estado: *{s['status']}*"
+                            f"🧪 *[TESTE IA + SMC]* 🔻 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
+                            f"Entrada Short @ `${s['preco']:.5f}`\n\n"
+                            f"🤖 *Auditoria da IA:*\n{s['parecer_ia']}"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(caption, s['foto'])
                         if sucesso:
-                            st.success(f"✅ Alerta de teste SMC enviado para {s['moeda']} ({s['timeframe']})!")
+                            st.success(f"✅ Alerta com IA enviado para {s['moeda']} ({s['timeframe']})!")
                         else:
-                            st.error(f"❌ Falha no Telegram para {s['moeda']}: {msg}")
+                            st.error(f"❌ Falha no Telegram: {msg}")
             else:
                 for s in sinais_registados:
                     if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 6:
                         caption = (
-                            f"🔻 *SMC SHORT* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
-                            f"Divergência Tripla RSI + Liquidity Sweep @ `${s['preco']:.5f}`"
+                            f"🔻 *SMC SHORT + IA* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
+                            f"Entrada @ `${s['preco']:.5f}`\n\n"
+                            f"🤖 *Auditoria:*\n{s['parecer_ia']}"
                         )
                         sucesso, msg = enviar_alerta_telegram_com_foto(caption, s['foto'])
                         if sucesso:
@@ -282,7 +328,7 @@ with st.spinner("A analisar Top 250 em Multi-Timeframe (2h, 4h, 1d) por Divergê
         col1, col2, col3 = st.columns(3)
         col1.metric("Oportunidades Ativas (Top 250)", len(sinais_registados))
         col2.metric("Timeframes Varridos", "2h, 4h, 1d")
-        col3.metric("Estado da Rede", "🟢 Ativo 24/7")
+        col3.metric("Estado da IA", "🟢 Gemini Vision Ativo")
         st.markdown("---")
 
         if len(sinais_registados) == 0:
@@ -295,10 +341,13 @@ with st.spinner("A analisar Top 250 em Multi-Timeframe (2h, 4h, 1d) por Divergê
                         <span style="background: #2d2d3d; padding: 2px 6px; border-radius: 4px; font-size: 12px;">{s['timeframe']}</span>
                         <span style="float: right; background: #3d1a1a; color: #ff8080; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{s['data']}</span>
                         <br><br>
-                        <span>Divergência Tripla RSI + Sweep @ <b>\${s['preco']:.5f}</b></span>
+                        <span>Entrada @ <b>\${s['preco']:.5f}</b></span>
                         <span style="float: right;">
                             Estado: <b style="color: #ff9800;">{s['status']}</b>
                         </span>
+                        <div class="ai-box">
+                            🤖 <b>Parecer do Agente IA:</b> {s['parecer_ia']}
+                        </div>
                     </div>
                 """, unsafe_allow_html=True)
                 
