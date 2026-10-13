@@ -21,7 +21,7 @@ TELEGRAM_CHAT_ID = "6311547341"
 # --- CHAVE DA IA (Lida com segurança das Variáveis de Ambiente do Render) ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-st.set_page_config(page_title="Crypto RSI Divergence Bot (Top 250)", layout="wide")
+st.set_page_config(page_title="Crypto RSI Divergence Bot (Top All)", layout="wide")
 
 st.markdown("""
     <style>
@@ -53,9 +53,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("⚡ Crypto RSI Divergence & AI Vision Bot (24/7)")
+st.title("⚡ Crypto RSI Divergence & AI Vision Bot (Todas as Criptos / 20 Dias)")
 
-SENT_FILE = "sent_signals_divergence_v4.json"
+SENT_FILE = "sent_signals_divergence_v5.json"
 
 def carregar_sinais_enviados():
     if os.path.exists(SENT_FILE):
@@ -85,7 +85,7 @@ else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Modo Autónomo:** Varrimento de 20 dias com PUMP garantido e deteção avançada de divergências RSI em 8 timeframes.")
+st.sidebar.info("💡 **Modo Total:** Análise de **todas** as moedas USDT da Binance em 8 timeframes (15m a 1D) até 20 dias atrás.")
 
 def gerar_grafico_mini(df, entry_price, sl_price, tp_price, tipo):
     try:
@@ -135,7 +135,7 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price, tipo):
         return None
 
 def auditar_grafico_com_gemini(foto_bytes, symbol, tf, preco, tipo):
-    """Agente de IA treinado para validar divergências de RSI e estrutura técnica"""
+    """Agente de IA audita a divergência encontrada"""
     if not GEMINI_API_KEY or foto_bytes is None:
         return "Análise de IA pendente (Defina GEMINI_API_KEY no Render)."
     
@@ -207,10 +207,10 @@ def detetar_divergencia_rsi(df):
         lows = df['low'].values
         rsi = df['rsi'].values
 
-        # 1. Deteção Flexível de Picos Bearish (Máximos Locais)
+        # 1. Picos Bearish (Máximos locais)
         picos = []
-        for i in range(4, len(df) - 4):
-            if highs[i] >= max(highs[i-4:i]) and highs[i] >= max(highs[i+1:i+5]):
+        for i in range(3, len(df) - 3):
+            if highs[i] >= max(highs[i-3:i]) and highs[i] >= max(highs[i+1:i+4]):
                 picos.append(i)
 
         for n in range(len(picos) - 1, -1, -1):
@@ -223,10 +223,10 @@ def detetar_divergencia_rsi(df):
             for m in range(n - 1, -1, -1):
                 p1 = picos[m]
                 dist = p2 - p1
-                if dist < 3 or dist > 150:
+                if dist < 2 or dist > 180:
                     continue
 
-                # Bearish: Preço sobe (Higher High), RSI desce (Lower High)
+                # Bearish: Preço faz Máximo Maior, RSI faz Máximo Menor
                 if highs[p2] > highs[p1] and rsi[p2] < rsi[p1]:
                     entry_price = closes[p2]
                     sl_price = max(highs[p1], highs[p2]) * 1.015
@@ -242,10 +242,10 @@ def detetar_divergencia_rsi(df):
                             "signal_time": signal_time
                         }
 
-        # 2. Deteção Flexível de Fundos Bullish (Mínimos Locais)
+        # 2. Fundos Bullish (Mínimos locais)
         fundos = []
-        for i in range(4, len(df) - 4):
-            if lows[i] <= min(lows[i-4:i]) and lows[i] <= min(lows[i+1:i+5]):
+        for i in range(3, len(df) - 3):
+            if lows[i] <= min(lows[i-3:i]) and lows[i] <= min(lows[i+1:i+4]):
                 fundos.append(i)
 
         for n in range(len(fundos) - 1, -1, -1):
@@ -258,10 +258,10 @@ def detetar_divergencia_rsi(df):
             for m in range(n - 1, -1, -1):
                 f1 = fundos[m]
                 dist = f2 - f1
-                if dist < 3 or dist > 150:
+                if dist < 2 or dist > 180:
                     continue
 
-                # Bullish: Preço desce (Lower Low), RSI sobe (Higher Low)
+                # Bullish: Preço faz Mínimo Menor, RSI faz Mínimo Maior
                 if lows[f2] < lows[f1] and rsi[f2] > rsi[f1]:
                     entry_price = closes[f2]
                     sl_price = min(lows[f1], lows[f2]) * 0.985
@@ -288,21 +288,9 @@ def analisar_mercado_autonomo():
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
         exchange.load_markets()
-        tickers = exchange.fetch_tickers()
         
-        pairs_volume = []
-        for symbol, ticker in tickers.items():
-            if '/USDT' in symbol and not 'UP/' in symbol and not 'DOWN/' in symbol:
-                quote_vol = ticker.get('quoteVolume', 0)
-                if quote_vol and quote_vol > 1000000: # Volume alargado para incluir PUMP
-                    pairs_volume.append((symbol, quote_vol))
-                    
-        pairs_volume.sort(key=lambda x: x[1], reverse=True)
-        symbols = [item[0] for item in pairs_volume[:250]]
-        
-        # Garantir explicitamente que PUMP/USDT é sempre analisado
-        if 'PUMP/USDT' in tickers and 'PUMP/USDT' not in symbols:
-            symbols.append('PUMP/USDT')
+        # Obter TODAS as moedas USDT listadas na Binance (sem filtro de volume)
+        symbols = [symbol for symbol in exchange.markets if '/USDT' in symbol and not 'UP/' in symbol and not 'DOWN/' in symbol and exchange.markets[symbol]['active']]
         
         timeframes = ['15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d']
 
@@ -313,7 +301,7 @@ def analisar_mercado_autonomo():
                     if len(ohlcv) < 50:
                         continue
                     
-                    ohlcv_definitivo = ohlcv[:-1]
+                    ohlcv_definitivo = ohlcv[:-1] # Vela fechada
                         
                     df = pd.DataFrame(ohlcv_definitivo, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['rsi'] = calcular_rsi(df['close'].values, 14)
@@ -360,7 +348,7 @@ def analisar_mercado_autonomo():
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return sinais_registados
 
-with st.spinner("A analisar Top 250 + PUMP (Histórico de 20 dias, picos flexíveis)..."):
+with st.spinner("A analisar TODAS as criptos da Binance (20 dias, 8 timeframes)..."):
     try:
         sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
@@ -400,11 +388,11 @@ with st.spinner("A analisar Top 250 + PUMP (Histórico de 20 dias, picos flexív
         col1, col2, col3 = st.columns(3)
         col1.metric("Divergências (Últimos 20 Dias)", len(sinais_registados))
         col2.metric("Timeframes Varridos", "15m a 1D")
-        col3.metric("Direções", "Bullish & Bearish")
+        col3.metric("Cobertura", "Todas as Moedas USDT")
         st.markdown("---")
 
         if len(sinais_registados) == 0:
-            st.info("Nenhuma divergência de RSI encontrada nos últimos 20 dias no Top 250.")
+            st.info("Nenhuma divergência de RSI encontrada nos últimos 20 dias em todas as moedas.")
         else:
             for s in sinais_registados:
                 css_card = "card-bearish" if s['tipo'] == 'bearish' else "card-bullish"
