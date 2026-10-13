@@ -26,12 +26,20 @@ st.set_page_config(page_title="Crypto RSI Divergence Bot (Top 250)", layout="wid
 st.markdown("""
     <style>
     .stApp { background-color: #121214; color: #ffffff; }
-    .card {
+    .card-bearish {
         background-color: #1e1e24;
         border-radius: 10px;
         padding: 15px;
         margin-bottom: 15px;
         border-left: 5px solid #ff5252;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    }
+    .card-bullish {
+        background-color: #1e1e24;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 15px;
+        border-left: 5px solid #4caf50;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
     .ai-box {
@@ -47,7 +55,7 @@ st.markdown("""
 
 st.title("⚡ Crypto RSI Divergence & AI Vision Bot (24/7)")
 
-SENT_FILE = "sent_signals_divergence.json"
+SENT_FILE = "sent_signals_divergence_v2.json"
 
 def carregar_sinais_enviados():
     if os.path.exists(SENT_FILE):
@@ -77,9 +85,9 @@ else:
     st.session_state.forcar_teste = False
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Modo Autónomo:** Varrimento alargado a 10 dias em 30m, 1h, 2h, 4h, 6h, 12h e 1d com velas definitivas.")
+st.sidebar.info("💡 **Modo Autónomo:** Varrimento de 20 dias em 15m, 30m, 1h, 2h, 4h, 6h, 12h e 1d (Bullish & Bearish).")
 
-def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
+def gerar_grafico_mini(df, entry_price, sl_price, tp_price, tipo):
     try:
         subset_df = df.copy()
         subset_df['timestamp'] = pd.to_datetime(subset_df['timestamp'], unit='ms')
@@ -95,14 +103,18 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
         largura_caixa = min(10, total_velas)
         x_inicio = total_velas - largura_caixa
         
-        altura_risco = sl_price - entry_price
+        cor_caixa = '#ff5252' if tipo == 'bearish' else '#4caf50'
+        
+        altura_risco = abs(sl_price - entry_price)
         if altura_risco > 0:
-            rect_risk = Rectangle((x_inicio, entry_price), largura_caixa, altura_risco, facecolor='#ff5252', alpha=0.35, edgecolor='none', zorder=3)
+            y_risco = entry_price if tipo == 'bearish' else sl_price
+            rect_risk = Rectangle((x_inicio, y_risco), largura_caixa, altura_risco, facecolor=cor_caixa, alpha=0.35, edgecolor='none', zorder=3)
             ax.add_patch(rect_risk)
             
-        altura_lucro = entry_price - tp_price
+        altura_lucro = abs(entry_price - tp_price)
         if altura_lucro > 0:
-            rect_reward = Rectangle((x_inicio, tp_price), largura_caixa, altura_lucro, facecolor='#4caf50', alpha=0.35, edgecolor='none', zorder=3)
+            y_lucro = tp_price if tipo == 'bearish' else entry_price
+            rect_reward = Rectangle((x_inicio, y_lucro), largura_caixa, altura_lucro, facecolor='#4caf50' if tipo=='bearish' else '#2196f3', alpha=0.35, edgecolor='none', zorder=3)
             ax.add_patch(rect_reward)
         
         ax.axhline(entry_price, color='#ffeb3b', linestyle='--', linewidth=1, alpha=0.9, zorder=4)
@@ -122,20 +134,21 @@ def gerar_grafico_mini(df, entry_price, sl_price, tp_price):
     except Exception:
         return None
 
-def auditar_grafico_com_gemini(foto_bytes, symbol, tf, preco):
+def auditar_grafico_com_gemini(foto_bytes, symbol, tf, preco, tipo):
     """Agente de IA treinado para validar divergências de RSI e estrutura técnica"""
     if not GEMINI_API_KEY or foto_bytes is None:
         return "Análise de IA pendente (Defina GEMINI_API_KEY no Render)."
     
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
+        direcao = "Short (Bearish)" if tipo == 'bearish' else "Long (Bullish)"
         
         prompt = (
             f"És um analista trader institucional sênior especialista em Divergências de RSI e Action Price. "
-            f"Analisa este gráfico de {symbol} no timeframe de {tf} com sinal de Divergência Bearish @ \${preco:.5f}. "
-            f"O retângulo vermelho é o Risco (Stop Loss) e o verde é o Take Profit (2:1). "
+            f"Analisa este gráfico de {symbol} no timeframe de {tf} com sinal de Divergência {direcao} @ \${preco:.5f}. "
+            f"O retângulo vermelho/verde representa o Risco e o Alvo. "
             f"Responde estritamente em duas linhas curtas e objetivas em Português: "
-            f"1) Validação da divergência de RSI (máximos ascendentes no preço vs máximos descendentes no RSI). "
+            f"1) Validação da divergência de RSI. "
             f"2) Veredito final com emoji (ex: Aprovado ✅ ou Cuidado ⚠️)."
         )
         
@@ -191,16 +204,16 @@ def detetar_divergencia_rsi(df):
 
         closes = df['close'].values
         highs = df['high'].values
+        lows = df['low'].values
         rsi = df['rsi'].values
 
-        # Encontrar picos locais definitivos (excluindo a última vela em formação)
+        # 1. Procurar Picos Bearish (Máximos)
         picos_idx = []
         for i in range(2, len(df) - 1):
             if highs[i] >= highs[i-1] and highs[i] >= highs[i+1] and highs[i] >= highs[i-2] and highs[i] >= highs[i+2]:
                 picos_idx.append(i)
 
         if len(picos_idx) >= 2:
-            # Varrimento retroativo até 10 dias (240 horas) para encontrar picos com divergência
             for idx in range(len(picos_idx) - 1, 0, -1):
                 p1 = picos_idx[idx - 1]
                 p2 = picos_idx[idx]
@@ -208,27 +221,61 @@ def detetar_divergencia_rsi(df):
                 signal_time = pd.to_datetime(df['timestamp'].iloc[p2], unit='ms')
                 horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
                 
-                if horas_atras > 240: # Limite de 10 dias atrás
+                if horas_atras > 480: # Limite de 20 dias atrás
                     continue
 
                 preco_sobe = highs[p2] > highs[p1]
                 rsi_desce = rsi[p2] < rsi[p1] and rsi[p2] > 55
 
                 if preco_sobe and rsi_desce:
-                    entry_price = closes[p2] # Preço no momento do pico da divergência
+                    entry_price = closes[p2]
                     sl_price = max(highs[p1], highs[p2]) * 1.015
                     risco = sl_price - entry_price
-                    if risco <= 0:
-                        continue
-                    tp_price = entry_price - (risco * 2.0)
-                    
-                    return {
-                        "entry": entry_price,
-                        "sl": sl_price,
-                        "tp": tp_price,
-                        "status": "Divergência Bearish RSI 🔻",
-                        "signal_time": signal_time
-                    }
+                    if risco > 0:
+                        tp_price = entry_price - (risco * 2.0)
+                        return {
+                            "tipo": "bearish",
+                            "entry": entry_price,
+                            "sl": sl_price,
+                            "tp": tp_price,
+                            "status": "Divergência Bearish RSI 🔻",
+                            "signal_time": signal_time
+                        }
+
+        # 2. Procurar Fundos Bullish (Mínimos)
+        fundos_idx = []
+        for i in range(2, len(df) - 1):
+            if lows[i] <= lows[i-1] and lows[i] <= lows[i+1] and lows[i] <= lows[i-2] and lows[i] <= lows[i+2]:
+                fundos_idx.append(i)
+
+        if len(fundos_idx) >= 2:
+            for idx in range(len(fundos_idx) - 1, 0, -1):
+                f1 = fundos_idx[idx - 1]
+                f2 = fundos_idx[idx]
+
+                signal_time = pd.to_datetime(df['timestamp'].iloc[f2], unit='ms')
+                horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
+                
+                if horas_atras > 480: # Limite de 20 dias atrás
+                    continue
+
+                preco_desce = lows[f2] < lows[f1]
+                rsi_sobe = rsi[f2] > rsi[f1] and rsi[f2] < 45
+
+                if preco_desce and rsi_sobe:
+                    entry_price = closes[f2]
+                    sl_price = min(lows[f1], lows[f2]) * 0.985
+                    risco = entry_price - sl_price
+                    if risco > 0:
+                        tp_price = entry_price + (risco * 2.0)
+                        return {
+                            "tipo": "bullish",
+                            "entry": entry_price,
+                            "sl": sl_price,
+                            "tp": tp_price,
+                            "status": "Divergência Bullish RSI 🟢",
+                            "signal_time": signal_time
+                        }
     except Exception:
         pass
     return None
@@ -236,7 +283,7 @@ def detetar_divergencia_rsi(df):
 @st.cache_data(ttl=300, show_spinner=False)
 def analisar_mercado_autonomo():
     sinais_brutos = []
-    tf_priority = {'30m': 1, '1h': 2, '2h': 3, '4h': 4, '6h': 5, '12h': 6, '1d': 7}
+    tf_priority = {'15m': 1, '30m': 2, '1h': 3, '2h': 4, '4h': 5, '6h': 6, '12h': 7, '1d': 8}
     
     try:
         exchange = ccxt.binance({'enableRateLimit': True})
@@ -253,17 +300,16 @@ def analisar_mercado_autonomo():
         pairs_volume.sort(key=lambda x: x[1], reverse=True)
         symbols = [item[0] for item in pairs_volume[:250]]
         
-        timeframes = ['30m', '1h', '2h', '4h', '6h', '12h', '1d']
+        timeframes = ['15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d']
 
         for symbol in symbols:
             for tf in timeframes:
                 try:
-                    # 500 velas para garantir cobertura de histórico até 10 dias atrás
-                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=500)
+                    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=1000)
                     if len(ohlcv) < 50:
                         continue
                     
-                    ohlcv_definitivo = ohlcv[:-1] # Excluir a última vela em curso
+                    ohlcv_definitivo = ohlcv[:-1]
                         
                     df = pd.DataFrame(ohlcv_definitivo, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['rsi'] = calcular_rsi(df['close'].values, 14)
@@ -274,10 +320,10 @@ def analisar_mercado_autonomo():
                         horas_atras = int((datetime.now() - signal_time.to_pydatetime()).total_seconds() // 3600)
                         data_formatada = signal_time.strftime('%d/%m %H:%M')
                         nome_moeda = symbol.split('/')[0]
-                        signal_id = f"{nome_moeda}_{tf}_{signal_time.strftime('%Y%m%d%H')}"
+                        signal_id = f"{nome_moeda}_{tf}_{setup['tipo']}_{signal_time.strftime('%Y%m%d%H')}"
                         
-                        foto_bytes = gerar_grafico_mini(df, setup['entry'], setup['sl'], setup['tp'])
-                        parecer_ia = auditar_grafico_com_gemini(foto_bytes, nome_moeda, tf, setup['entry'])
+                        foto_bytes = gerar_grafico_mini(df, setup['entry'], setup['sl'], setup['tp'], setup['tipo'])
+                        parecer_ia = auditar_grafico_com_gemini(foto_bytes, nome_moeda, tf, setup['entry'], setup['tipo'])
                         
                         sinais_brutos.append({
                             "id": signal_id,
@@ -286,6 +332,7 @@ def analisar_mercado_autonomo():
                             "tf_peso": tf_priority.get(tf, 1),
                             "preco": setup['entry'],
                             "status": setup['status'],
+                            "tipo": setup['tipo'],
                             "horas": max(0, horas_atras),
                             "data": data_formatada,
                             "foto": foto_bytes,
@@ -296,7 +343,6 @@ def analisar_mercado_autonomo():
     except Exception:
         pass
 
-    # Filtrar hierarquia: se uma moeda tiver divergência em vários timeframes, manter apenas o superior
     sinais_por_moeda = {}
     for s in sinais_brutos:
         moeda = s['moeda']
@@ -310,7 +356,7 @@ def analisar_mercado_autonomo():
     sinais_registados.sort(key=lambda x: x['data'], reverse=True)
     return sinais_registados
 
-with st.spinner("A analisar Top 250 (Histórico de 10 dias) com foco em velas definitivas..."):
+with st.spinner("A analisar Top 250 (Histórico de 20 dias, 15m a 1D, Bullish/Bearish)..."):
     try:
         sinais_registados = analisar_mercado_autonomo()
         sinais_enviados_set = carregar_sinais_enviados()
@@ -319,11 +365,11 @@ with st.spinner("A analisar Top 250 (Histórico de 10 dias) com foco em velas de
             if st.session_state.get('forcar_teste', False):
                 trades_teste = sinais_registados[:2]
                 if not trades_teste:
-                    st.warning("Nenhuma divergência encontrada nos últimos 10 dias para teste.")
+                    st.warning("Nenhuma divergência encontrada nos últimos 20 dias para teste.")
                 for s in trades_teste:
                     if s['foto']:
                         caption = (
-                            f"🧪 *[TESTE RSI DIVERGENCE]* 🔻 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
+                            f"🧪 *[TESTE RSI DIVERGENCE]* 📌 *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
                             f"Preço @ `${s['preco']:.5f}`\n\n"
                             f"🤖 *Auditoria da IA:*\n{s['parecer_ia']}"
                         )
@@ -334,10 +380,9 @@ with st.spinner("A analisar Top 250 (Histórico de 10 dias) com foco em velas de
                             st.error(f"❌ Falha no Telegram: {msg}")
             else:
                 for s in sinais_registados:
-                    # Apenas envia para o Telegram se o sinal for novo E tiver ocorrido nas últimas 12 horas (evita spam de histórico antigo)
                     if s['id'] not in sinais_enviados_set and s['foto'] and s['horas'] <= 12:
                         caption = (
-                            f"🔻 *DIVERGÊNCIA RSI* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
+                            f"📌 *DIVERGÊNCIA RSI* *{s['moeda']}* `{s['timeframe']}`   📅 `{s['data']}`\n"
                             f"Preço @ `${s['preco']:.5f}`\n\n"
                             f"🤖 *Auditoria:*\n{s['parecer_ia']}"
                         )
@@ -345,25 +390,25 @@ with st.spinner("A analisar Top 250 (Histórico de 10 dias) com foco em velas de
                         if sucesso:
                             guardar_sinal_enviado(s['id'])
                     elif s['id'] not in sinais_enviados_set and s['horas'] > 12:
-                        # Regista os antigos como já "vistos" para não tentar enviá-los futuramente
                         guardar_sinal_enviado(s['id'])
 
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Divergências (Últimos 10 Dias)", len(sinais_registados))
-        col2.metric("Timeframes Varridos", "30m a 1D")
-        col3.metric("Filtro Hierárquico", "Ativo (Maior TF Prioritário)")
+        col1.metric("Divergências (Últimos 20 Dias)", len(sinais_registados))
+        col2.metric("Timeframes Varridos", "15m a 1D")
+        col3.metric("Direções", "Bullish & Bearish")
         st.markdown("---")
 
         if len(sinais_registados) == 0:
-            st.info("Nenhuma divergência de RSI encontrada nos últimos 10 dias no Top 250.")
+            st.info("Nenhuma divergência de RSI encontrada nos últimos 20 dias no Top 250.")
         else:
             for s in sinais_registados:
+                css_card = "card-bearish" if s['tipo'] == 'bearish' else "card-bullish"
                 st.markdown(f"""
-                    <div class="card">
-                        <b style="font-size: 18px; color: #ff5252;">🔻 DIVERGÊNCIA RSI: {s['moeda']}</b> 
+                    <div class="{css_card}">
+                        <b style="font-size: 18px;">📌 DIVERGÊNCIA RSI: {s['moeda']}</b> 
                         <span style="background: #2d2d3d; padding: 2px 6px; border-radius: 4px; font-size: 12px;">{s['timeframe']}</span>
-                        <span style="float: right; background: #3d1a1a; color: #ff8080; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{s['data']}</span>
+                        <span style="float: right; background: #252530; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{s['data']}</span>
                         <br><br>
                         <span>Preço no Sinal @ <b>\${s['preco']:.5f}</b></span>
                         <span style="float: right;">
