@@ -313,7 +313,8 @@ def executar_scan() -> dict[str, Any]:
     symbols: list[str] = []
     supported_timeframes: list[str] = []
     market_cache: dict[tuple[str, str], pd.DataFrame] = {}
-    chart_sources: dict[str, pd.DataFrame] = {}
+    trades = read_trades()
+    active_trade_keys = {(t["symbol"], t["timeframe"]) for t in trades if t.get("status") == "Em curso"}
     oi_exchange: Any | None = None
     oi_initialized = False
     oi_cache: dict[tuple[str, str, int], dict[str, Any]] = {}
@@ -343,7 +344,8 @@ def executar_scan() -> dict[str, Any]:
                     df = full_df.iloc[:-1].reset_index(drop=True)
                     if len(df) < max(90, RSI_PERIOD + 20):
                         continue
-                    market_cache[(symbol, timeframe)] = df.copy()
+                    if (symbol, timeframe) in active_trade_keys:
+                        market_cache[(symbol, timeframe)] = df
                     ohlcv_ok += 1
                     pair_timeframes_processed += 1
 
@@ -384,7 +386,8 @@ def executar_scan() -> dict[str, Any]:
                         signal["exchange"] = EXCHANGE_ID.upper()
                         signal["id"] = f"{EXCHANGE_ID}_{symbol.replace('/', '')}_{signal['id']}"
                         signals.append(signal)
-                        chart_sources[signal["id"]] = df
+                        if signal.get("categoria") == "breakout" and signal.get("fase") == "Entrada":
+                            market_cache[(symbol, timeframe)] = df
                 except Exception as exc:
                     errors += 1
                     log.warning("Falha em %s %s: %s", symbol, timeframe, exc)
@@ -404,14 +407,17 @@ def executar_scan() -> dict[str, Any]:
     unique = {signal["id"]: signal for signal in signals}
     signals = sorted(unique.values(), key=lambda item: item["signal_time_ms"], reverse=True)
 
-    trades = read_trades()
     for signal in signals:
         if signal.get("categoria") == "breakout" and signal.get("fase") == "Entrada":
             upsert_trade(trades, signal)
-    statuses_before = {t["trade_id"]: t.get("status") for t in read_trades()}
+    statuses_before = {t["trade_id"]: t.get("status") for t in trades}
     atualizar_estado_trades(trades, market_cache)
     # Uma imagem guardada por trade, atualizada quando fecha em SL/TP.
+    max_trade_images = max(0, int(os.getenv("MAX_TRADE_IMAGES_PER_SCAN", "2")))
+    generated_trade_images = 0
     for trade in trades:
+        if generated_trade_images >= max_trade_images:
+            break
         df_trade = market_cache.get((trade["symbol"], trade["timeframe"]))
         if df_trade is None:
             continue
@@ -421,9 +427,11 @@ def executar_scan() -> dict[str, Any]:
         if (not path_img.is_file()) or (statuses_before.get(trade["trade_id"]) != trade.get("status")):
             try:
                 save_trade_chart(trade, df_trade)
+                generated_trade_images += 1
             except Exception:
                 log.exception("Não foi possível guardar gráfico da trade %s", trade["trade_id"])
     save_trades(trades)
+    market_cache.clear()
 
     payload = {
         "scan_started_at": started_at,
@@ -455,19 +463,26 @@ def executar_scan() -> dict[str, Any]:
     write_json_atomic(LATEST_FILE, payload)
 
     sent_ids = read_sent_ids()
+    image_exchange = None
     new_alerts = 0
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         for signal in signals:
             if signal["id"] in sent_ids:
                 continue
-            try:
-                chart = render_signal_chart(chart_sources[signal["id"]], signal)
-            except Exception:
-                log.exception("Falha a criar imagem do sinal %s", signal["id"])
-                chart = None
             if signal.get("categoria") == "rsi_divergence":
-                ok = enviar_alerta_telegram(formatar_alerta_rsi(signal), chart)
+                # Sem imagens RSI: menos RAM e uploads para o Telegram.
+                ok = enviar_alerta_telegram(formatar_alerta_rsi(signal), None)
             else:
+                chart = None
+                try:
+                    if image_exchange is None:
+                        image_exchange = factory({"enableRateLimit": True, "timeout": 20000, "options": {"defaultType": MARKET_TYPE}})
+                    raw_chart = image_exchange.fetch_ohlcv(signal["symbol"], timeframe=signal["timeframe"], limit=min(140, OHLCV_LIMIT))
+                    if raw_chart and len(raw_chart) >= 20:
+                        chart_df = pd.DataFrame(raw_chart, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                        chart = render_signal_chart(chart_df, signal)
+                except Exception:
+                    log.exception("Falha a gerar imagem do sinal %s", signal["id"])
                 ok = enviar_alerta_telegram(formatar_alerta_breakout(signal), chart)
             if ok:
                 sent_ids.add(signal["id"])
@@ -476,6 +491,11 @@ def executar_scan() -> dict[str, Any]:
     else:
         log.warning("Alertas Telegram desativados por falta de credenciais.")
 
+    if image_exchange is not None:
+        try:
+            image_exchange.close()
+        except Exception:
+            pass
     log.info(
         "Scan concluído | pares=%d | OHLCV OK=%d | pares/timeframes=%d | erros=%d | sinais=%d | novos alertas=%d | duração=%.1fs",
         len(symbols), ohlcv_ok, pair_timeframes_processed, errors, len(signals), new_alerts, payload["scan_seconds"],

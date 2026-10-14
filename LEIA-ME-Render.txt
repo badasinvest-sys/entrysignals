@@ -33,3 +33,12 @@ NOTAS:
 * OI incompleto é exibido como INDISPONÍVEL, nunca uma falsa confirmação.
 * Gráficos de trades e win rate guardados em disco LOCAL desaparecem em reinícios/deploys Render Free.
 * Ler README.md para detalhes, critérios e testes.
+
+OTIMIZAÇÃO V6 PARA RENDER GRATUITO
+CHART_DPI=72
+MAX_TRADE_IMAGES_PER_SCAN=2
+SCAN_TOP_N=20
+OHLCV_LIMIT=260
+
+Na V6, alertas RSI são só texto. Imagens mantidas em Possível setup / Entrada e no histórico.
+Reduzir DPI diminui tamanho e picos de RAM na renderização; não garante ficar abaixo da quota do Render.

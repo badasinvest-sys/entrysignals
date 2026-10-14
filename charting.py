@@ -29,15 +29,15 @@ def _render_chart(df: pd.DataFrame, event: dict[str, Any], trade_record: dict[st
         raise ValueError("Sem velas suficientes para criar o gráfico.")
     original = df.reset_index(drop=True)
     pivots = event.get("pivots", [])
-    start = max(0, len(original) - 110)
+    start = max(0, len(original) - 75)
     if pivots:
         first_idx = int(min(int(p.get("price_idx", len(original))) for p in pivots))
         start = max(0, min(start, first_idx - 7))
-    start = max(0, len(original) - 360, start)
+    start = max(0, len(original) - 160, start)
     d = original.iloc[start:].reset_index(drop=True)
     n = len(d)
 
-    fig, (ax, arsi) = plt.subplots(2, 1, figsize=(12.5, 7.0), sharex=True,
+    fig, (ax, arsi) = plt.subplots(2, 1, figsize=(9.0, 5.2), sharex=True,
                                    gridspec_kw={"height_ratios": [3.8, 1.2]})
     fig.patch.set_facecolor("#101827")
     for a in (ax, arsi):
@@ -117,7 +117,7 @@ def _render_chart(df: pd.DataFrame, event: dict[str, Any], trade_record: dict[st
     arsi.set_xticklabels([pd.to_datetime(int(ts[t]), unit="ms", utc=True).strftime("%d %b %Hh") for t in ticks], rotation=0)
     fig.subplots_adjust(hspace=.09, left=.08, right=.86, bottom=.08, top=.88)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=125, facecolor=fig.get_facecolor())
+    fig.savefig(buf, format="png", dpi=max(55, min(110, int(os.getenv("CHART_DPI", "78")))), facecolor=fig.get_facecolor())
     plt.close(fig)
     return buf.getvalue()
 
