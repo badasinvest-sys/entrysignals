@@ -6,16 +6,21 @@ par, timeframe e fase. Não elimina setups distantes no tempo.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
+import os
 from typing import Any
 
 TF_MS = {"15m": 900_000, "30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
-MAX_ZONE_RELATIVE_GAP = 0.012  # 1,2% da zona para compensar recalculações pequenas.
+MAX_ZONE_RELATIVE_GAP = max(0.001, float(os.getenv("SETUP_ZONE_TOLERANCE_PCT", "0.018")))
+# Uma resistência pode originar vários "rompimentos" técnicos na mesma
+# estrutura lateral. 4h: 16 velas (64h); 1d: 8 velas. Configurável.
+SETUP_MERGE_BARS = max(2, int(os.getenv("SETUP_MERGE_BARS", "16")))
+MERGE_BARS_BY_TF = {"4h": SETUP_MERGE_BARS, "1d": max(4, SETUP_MERGE_BARS // 2)}
 
 
 def _ms(iso: str) -> int | None:
     try:
-        return int(datetime.strptime(iso, "%Y-%m-%d %H:%M UTC").timestamp() * 1000)
+        return int(datetime.strptime(iso, "%Y-%m-%d %H:%M UTC").replace(tzinfo=timezone.utc).timestamp() * 1000)
     except (ValueError, TypeError):
         return None
 
@@ -57,7 +62,7 @@ def same_setup(first: dict[str, Any], second: dict[str, Any]) -> bool:
         # Sem data do breakout, só IDs idênticos permitem equivalência segura.
         return bool(first.get("id") and first.get("id") == second.get("id"))
     period = TF_MS.get(str(first.get("timeframe")), 0)
-    if not period or abs(int(a_ms) - int(b_ms)) > period:
+    if not period or abs(int(a_ms) - int(b_ms)) > period * MERGE_BARS_BY_TF.get(str(first.get("timeframe")), SETUP_MERGE_BARS):
         return False
     try:
         a_level, b_level = _level(first), _level(second)
@@ -70,6 +75,29 @@ def same_setup(first: dict[str, Any], second: dict[str, Any]) -> bool:
 
 def same_phase(first: dict[str, Any], second: dict[str, Any]) -> bool:
     return first.get("fase") == second.get("fase") and same_setup(first, second)
+
+
+def same_campaign(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """Uma oportunidade equivale à mesma zona e ciclo de rompimento/reteste."""
+    return same_setup(first, second)
+
+
+def suppress_stale_possible(signals: list[dict[str, Any]], trades: list[dict[str, Any]],
+                            sent_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Nunca voltar a alertar 'possível' depois de existir entrada no mesmo setup.
+
+    Se ambas as fases aparecerem pela primeira vez no mesmo scan, só alerta
+    a entrada — não enviar um aviso retrospectivo de 'aguardar retrace'.
+    """
+    entries = [s for s in signals if s.get("categoria") == "breakout" and s.get("fase") == "Entrada"]
+    previous_entries = [h for h in sent_history if h.get("fase") == "Entrada"]
+    output = []
+    for s in signals:
+        if s.get("categoria") == "breakout" and s.get("fase") == "Possível setup":
+            if any(same_setup(s, other) for other in entries + previous_entries + trades):
+                continue
+        output.append(s)
+    return output
 
 
 def deduplicate_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:

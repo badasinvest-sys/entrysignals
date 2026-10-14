@@ -1,8 +1,20 @@
-V7 — Corrige duplicados de alertas e trades breakout.
+V8 — STOP ALERTAS DUPLICADOS
 
-Build Command: pip install -r requirements.txt
-Start Command: python start.py
+Build Command:
+pip install -r requirements.txt
 
-Mantenha as variáveis de ambiente da V6. Nenhuma variável nova obrigatória.
-Não apague manualmente ficheiros sent_alerts.json/trades_history.json se quiser conservar a memória de alertas/trades entre scans.
-O Render gratuito usa disco efémero; alertas podem reaparecer depois de novo deploy/restart se esses ficheiros desaparecerem.
+Start Command:
+python start.py
+
+Mantém as tuas variáveis anteriores.
+Opcionais, para ajustar o agrupamento de rompimentos:
+SETUP_MERGE_BARS=16
+SETUP_ZONE_TOLERANCE_PCT=0.018
+
+Para proteger o histórico também após deploy/restart do Render Free:
+Cria uma Redis Upstash Free ($0) e adiciona AO RENDER, NUNCA AO GITHUB:
+UPSTASH_REDIS_REST_URL=https://o-teu-endpoint.upstash.io
+UPSTASH_REDIS_REST_TOKEN=token-secreto
+
+Consulta README.md dentro do ZIP para explicação de primeiro scan,
+alertas, limitações e testes.

@@ -23,13 +23,16 @@ from divergence_engine import (detetar_divergencias_rsi, calcular_rsi, RSI_PERIO
                                MIN_RSI_DELTA, MIN_PRICE_DELTA_PCT, PRICE_PIVOT_DISTANCE)
 from open_interest import OI_MODE, OI_SOURCE_EXCHANGE, validar_oi
 from charting import render_signal_chart, save_trade_chart, CHARTS_DIR, chart_name
-from dedup_setup import same_setup, same_phase, deduplicate_signals, deduplicate_trades, already_traded, _breakout_ms_from_id, legacy_sent_breakouts
+from dedup_setup import same_setup, same_phase, deduplicate_signals, deduplicate_trades, already_traded, _breakout_ms_from_id, legacy_sent_breakouts, suppress_stale_possible
+from state_store import StateStore, StateUnavailable
 
 BASE_DIR = Path(__file__).resolve().parent
 LATEST_FILE = Path(os.getenv("LATEST_FILE", str(BASE_DIR / "latest_signals.json")))
 SENT_FILE = Path(os.getenv("SENT_FILE", str(BASE_DIR / "sent_alerts.json")))
 TRADES_FILE = Path(os.getenv("TRADES_FILE", str(BASE_DIR / "trades_history.json")))
 ALERT_HISTORY_FILE = Path(os.getenv("ALERT_HISTORY_FILE", str(BASE_DIR / "alert_history.json")))
+BOOTSTRAP_FILE = Path(os.getenv("BOOTSTRAP_FILE", str(BASE_DIR / "scanner_bootstrapped.json")))
+STATE = StateStore()
 
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "mexc").strip().lower()
 MARKET_TYPE = os.getenv("MARKET_TYPE", "spot").strip().lower()
@@ -77,18 +80,18 @@ def read_json(path: Path, default: Any) -> Any:
 
 
 def read_sent_ids() -> set[str]:
-    data = read_json(SENT_FILE, [])
+    data = STATE.load("sent_ids", SENT_FILE, [])
     if isinstance(data, list):
         return {str(x) for x in data}
     return set()
 
 
 def save_sent_ids(sent_ids: set[str]) -> None:
-    write_json_atomic(SENT_FILE, sorted(sent_ids)[-20000:])
+    STATE.save("sent_ids", SENT_FILE, sorted(sent_ids)[-20000:])
 
 
 def read_trades() -> list[dict[str, Any]]:
-    data = read_json(TRADES_FILE, {"trades": []})
+    data = STATE.load("trades", TRADES_FILE, {"trades": []})
     if isinstance(data, dict) and isinstance(data.get("trades"), list):
         return data["trades"]
     return []
@@ -96,7 +99,7 @@ def read_trades() -> list[dict[str, Any]]:
 
 def save_trades(trades: list[dict[str, Any]]) -> None:
     payload = {"updated_at": utc_now_iso(), "trades": trades}
-    write_json_atomic(TRADES_FILE, payload)
+    STATE.save("trades", TRADES_FILE, payload)
 
 
 def get_liquid_usdt_symbols(exchange: ccxt.Exchange, limit: int) -> list[str]:
@@ -316,6 +319,11 @@ def executar_scan() -> dict[str, Any]:
     pair_timeframes_processed = 0
     symbols: list[str] = []
     supported_timeframes: list[str] = []
+    # Falhas no estado remoto param o scan ANTES de enviar alertas.
+    sent_ids = read_sent_ids()
+    sent_signal_history = [x for x in STATE.load("alert_history", ALERT_HISTORY_FILE, []) if isinstance(x, dict)]
+    is_bootstrapped = bool(STATE.load("bootstrapped", BOOTSTRAP_FILE, False))
+    sent_signal_history.extend(legacy_sent_breakouts(sent_ids, EXCHANGE_ID, MARKET_TYPE))
     market_cache: dict[tuple[str, str], pd.DataFrame] = {}
     trades, removed_duplicates = deduplicate_trades(read_trades())
     if removed_duplicates:
@@ -413,6 +421,8 @@ def executar_scan() -> dict[str, Any]:
 
     unique = {signal["id"]: signal for signal in signals}
     signals = deduplicate_signals(list(unique.values()))
+    # O aviso "aguardando reteste" não deve surgir quando já há entrada.
+    signals = suppress_stale_possible(signals, trades, sent_signal_history)
 
     prior_trade_snapshot = [dict(t) for t in trades]
     for signal in signals:
@@ -472,12 +482,31 @@ def executar_scan() -> dict[str, Any]:
     }
     write_json_atomic(LATEST_FILE, payload)
 
-    sent_ids = read_sent_ids()
     image_exchange = None
     new_alerts = 0
+    # Primeira execução com estado vazio: não reencaminhar rompimentos
+    # históricos reaparecidos após um deploy. A partir do segundo scan,
+    # apenas eventos novos recebem alerta.
+    if not is_bootstrapped:
+        old_breakouts = 0
+        for signal in signals:
+            if signal.get("categoria") != "breakout":
+                continue
+            sent_ids.add(signal["id"])
+            sent_signal_history.append({
+                "id": signal["id"], "categoria": "breakout", "fase": signal["fase"],
+                "symbol": signal["symbol"], "timeframe": signal["timeframe"],
+                "market_type": MARKET_TYPE, "setup_id": signal.get("setup_id"),
+                "breakout_time_ms": signal.get("breakout_time_ms"), "nivel": signal.get("nivel"),
+                "origin": "bootstrap_no_replay",
+            })
+            old_breakouts += 1
+        STATE.save("alert_history", ALERT_HISTORY_FILE, sent_signal_history[-2500:])
+        save_sent_ids(sent_ids)
+        STATE.save("bootstrapped", BOOTSTRAP_FILE, True)
+        log.warning("Primeiro scan: %d rompimentos históricos registados sem Telegram, para evitar alertas retroativos.", old_breakouts)
+
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        sent_signal_history = [s for s in (read_json(ALERT_HISTORY_FILE, []) or []) if isinstance(s, dict)]
-        sent_signal_history.extend(legacy_sent_breakouts(sent_ids, EXCHANGE_ID, MARKET_TYPE))
         for signal in signals:
             if signal["id"] in sent_ids:
                 continue
@@ -489,6 +518,25 @@ def executar_scan() -> dict[str, Any]:
                 if any(same_phase(signal, previous) for previous in sent_signal_history):
                     log.info("Alerta equivalente já enviado: %s", signal["id"])
                     continue
+                # Possível setup nunca aparece depois de um reteste/entrada.
+                if signal["fase"] == "Possível setup" and any(
+                    same_setup(signal, previous) and previous.get("fase") == "Entrada"
+                    for previous in sent_signal_history
+                ):
+                    continue
+            # Marcar como reservado e persistir ANTES de enviar Telegram.
+            # Assim, mesmo um restart após envio não dispara novamente.
+            sent_ids.add(signal["id"])
+            if signal.get("categoria") == "breakout":
+                sent_signal_history.append({
+                    "id": signal["id"], "categoria": "breakout", "fase": signal["fase"],
+                    "symbol": signal["symbol"], "timeframe": signal["timeframe"],
+                    "market_type": MARKET_TYPE, "setup_id": signal.get("setup_id"),
+                    "breakout_time_ms": signal.get("breakout_time_ms"),
+                    "nivel": signal.get("nivel"), "origin": "reserved_before_send",
+                })
+                STATE.save("alert_history", ALERT_HISTORY_FILE, sent_signal_history[-2500:])
+            save_sent_ids(sent_ids)
             if signal.get("categoria") == "rsi_divergence":
                 # Sem imagens RSI: menos RAM e uploads para o Telegram.
                 ok = enviar_alerta_telegram(formatar_alerta_rsi(signal), None)
@@ -505,19 +553,9 @@ def executar_scan() -> dict[str, Any]:
                     log.exception("Falha a gerar imagem do sinal %s", signal["id"])
                 ok = enviar_alerta_telegram(formatar_alerta_breakout(signal), chart)
             if ok:
-                sent_ids.add(signal["id"])
-                save_sent_ids(sent_ids)
-                if signal.get("categoria") == "breakout":
-                    sent_signal_history.append({
-                        "id": signal["id"], "categoria": "breakout", "fase": signal["fase"],
-                        "symbol": signal["symbol"], "timeframe": signal["timeframe"],
-                        "market_type": MARKET_TYPE,
-                        "setup_id": signal.get("setup_id"),
-                        "breakout_time_ms": signal.get("breakout_time_ms"),
-                        "nivel": signal.get("nivel"),
-                    })
-                    write_json_atomic(ALERT_HISTORY_FILE, sent_signal_history[-2000:])
                 new_alerts += 1
+            else:
+                log.error("Telegram falhou após reserva de %s; não há repetição automática para evitar duplicação.", signal["id"])
     else:
         log.warning("Alertas Telegram desativados por falta de credenciais.")
 
@@ -535,13 +573,21 @@ def executar_scan() -> dict[str, Any]:
 
 def main() -> None:
     if "--once" in sys.argv:
-        executar_scan()
+        with STATE.exclusive_scan() as allowed:
+            if allowed:
+                executar_scan()
+            else:
+                log.warning("Outro scanner está ativo; scan --once omitido.")
         return
     log.info("Scanner iniciado; próxima varredura após cada ciclo de %d segundos.", SCAN_INTERVAL_SECONDS)
     while True:
         cycle_start = time.monotonic()
         try:
-            executar_scan()
+            with STATE.exclusive_scan() as allowed:
+                if allowed:
+                    executar_scan()
+                else:
+                    log.warning("Outro scanner está ativo; ciclo omitido para prevenir notificações duplicadas.")
         except KeyboardInterrupt:
             log.info("Scanner interrompido.")
             return
