@@ -23,11 +23,13 @@ from divergence_engine import (detetar_divergencias_rsi, calcular_rsi, RSI_PERIO
                                MIN_RSI_DELTA, MIN_PRICE_DELTA_PCT, PRICE_PIVOT_DISTANCE)
 from open_interest import OI_MODE, OI_SOURCE_EXCHANGE, validar_oi
 from charting import render_signal_chart, save_trade_chart, CHARTS_DIR, chart_name
+from dedup_setup import same_setup, same_phase, deduplicate_signals, deduplicate_trades, already_traded, _breakout_ms_from_id, legacy_sent_breakouts
 
 BASE_DIR = Path(__file__).resolve().parent
 LATEST_FILE = Path(os.getenv("LATEST_FILE", str(BASE_DIR / "latest_signals.json")))
 SENT_FILE = Path(os.getenv("SENT_FILE", str(BASE_DIR / "sent_alerts.json")))
 TRADES_FILE = Path(os.getenv("TRADES_FILE", str(BASE_DIR / "trades_history.json")))
+ALERT_HISTORY_FILE = Path(os.getenv("ALERT_HISTORY_FILE", str(BASE_DIR / "alert_history.json")))
 
 EXCHANGE_ID = os.getenv("EXCHANGE_ID", "mexc").strip().lower()
 MARKET_TYPE = os.getenv("MARKET_TYPE", "spot").strip().lower()
@@ -228,12 +230,14 @@ def upsert_trade(trades: list[dict[str, Any]], signal: dict[str, Any]) -> None:
     if not trade:
         return
     trade_id = signal["id"]
-    for row in trades:
-        if row.get("trade_id") == trade_id:
-            return
+    if already_traded(signal, trades):
+        log.info("Trade equivalente já registada: %s %s", signal["symbol"], signal["timeframe"])
+        return
     trades.append({
         "trade_id": trade_id,
         "setup_id": signal.get("setup_id"),
+        "breakout_time_ms": signal.get("breakout_time_ms") or _breakout_ms_from_id(str(signal.get("setup_id", ""))),
+        "market_type": MARKET_TYPE,
         "symbol": signal["symbol"],
         "timeframe": signal["timeframe"],
         "categoria": signal["categoria"],
@@ -313,7 +317,10 @@ def executar_scan() -> dict[str, Any]:
     symbols: list[str] = []
     supported_timeframes: list[str] = []
     market_cache: dict[tuple[str, str], pd.DataFrame] = {}
-    trades = read_trades()
+    trades, removed_duplicates = deduplicate_trades(read_trades())
+    if removed_duplicates:
+        log.warning("Histórico: removidas %d trades duplicadas da versão anterior", removed_duplicates)
+        save_trades(trades)
     active_trade_keys = {(t["symbol"], t["timeframe"]) for t in trades if t.get("status") == "Em curso"}
     oi_exchange: Any | None = None
     oi_initialized = False
@@ -405,10 +412,13 @@ def executar_scan() -> dict[str, Any]:
                 pass
 
     unique = {signal["id"]: signal for signal in signals}
-    signals = sorted(unique.values(), key=lambda item: item["signal_time_ms"], reverse=True)
+    signals = deduplicate_signals(list(unique.values()))
 
+    prior_trade_snapshot = [dict(t) for t in trades]
     for signal in signals:
         if signal.get("categoria") == "breakout" and signal.get("fase") == "Entrada":
+            if already_traded(signal, trades):
+                continue
             upsert_trade(trades, signal)
     statuses_before = {t["trade_id"]: t.get("status") for t in trades}
     atualizar_estado_trades(trades, market_cache)
@@ -466,9 +476,19 @@ def executar_scan() -> dict[str, Any]:
     image_exchange = None
     new_alerts = 0
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        sent_signal_history = [s for s in (read_json(ALERT_HISTORY_FILE, []) or []) if isinstance(s, dict)]
+        sent_signal_history.extend(legacy_sent_breakouts(sent_ids, EXCHANGE_ID, MARKET_TYPE))
         for signal in signals:
             if signal["id"] in sent_ids:
                 continue
+            if signal.get("categoria") == "breakout":
+                # Evitar reenviar entradas antigas mesmo após atualizar da V6 para V7.
+                if signal.get("fase") == "Entrada" and already_traded(signal, prior_trade_snapshot):
+                    log.info("Entrada já registada antes deste scan: %s", signal["id"])
+                    continue
+                if any(same_phase(signal, previous) for previous in sent_signal_history):
+                    log.info("Alerta equivalente já enviado: %s", signal["id"])
+                    continue
             if signal.get("categoria") == "rsi_divergence":
                 # Sem imagens RSI: menos RAM e uploads para o Telegram.
                 ok = enviar_alerta_telegram(formatar_alerta_rsi(signal), None)
@@ -487,6 +507,16 @@ def executar_scan() -> dict[str, Any]:
             if ok:
                 sent_ids.add(signal["id"])
                 save_sent_ids(sent_ids)
+                if signal.get("categoria") == "breakout":
+                    sent_signal_history.append({
+                        "id": signal["id"], "categoria": "breakout", "fase": signal["fase"],
+                        "symbol": signal["symbol"], "timeframe": signal["timeframe"],
+                        "market_type": MARKET_TYPE,
+                        "setup_id": signal.get("setup_id"),
+                        "breakout_time_ms": signal.get("breakout_time_ms"),
+                        "nivel": signal.get("nivel"),
+                    })
+                    write_json_atomic(ALERT_HISTORY_FILE, sent_signal_history[-2000:])
                 new_alerts += 1
     else:
         log.warning("Alertas Telegram desativados por falta de credenciais.")

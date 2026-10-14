@@ -1,44 +1,8 @@
-DEPLOY RENDER GRATUITO — V5
+V7 — Corrige duplicados de alertas e trades breakout.
 
-GitHub: coloca todos os ficheiros da V5 na raiz do repositório, com nomes originais.
+Build Command: pip install -r requirements.txt
+Start Command: python start.py
 
-BUILD COMMAND:
-pip install -r requirements.txt
-
-START COMMAND:
-python start.py
-
-VARIÁVEIS PRINCIPAIS:
-EXCHANGE_ID=mexc
-MARKET_TYPE=spot
-TIMEFRAMES=15m,30m,1h,4h,1d
-SCAN_TOP_N=35
-SCAN_INTERVAL_SECONDS=300
-OHLCV_LIMIT=320
-OI_MODE=confirm_if_available
-OI_SOURCE_EXCHANGE=binance
-OI_MIN_DROP_PCT=2.0
-MIN_PRICE_DIFFERENCE_PCT=0.006
-MIN_PRICE_DELTA_ATR=0.60
-MIN_RSI_DIFFERENCE=3.0
-TELEGRAM_BOT_TOKEN=<o teu token novo e secreto>
-TELEGRAM_CHAT_ID=<id da tua conta Telegram>
-
-EXEMPLO ZEC PERPETUAL FUTURES DA MEXC:
-MARKET_TYPE=swap
-EXTRA_SYMBOLS=ZECUSDT
-
-NOTAS:
-* Em spot não existe OI: histórico da Binance de contratos futuros é uma fonte externa independente.
-* OI incompleto é exibido como INDISPONÍVEL, nunca uma falsa confirmação.
-* Gráficos de trades e win rate guardados em disco LOCAL desaparecem em reinícios/deploys Render Free.
-* Ler README.md para detalhes, critérios e testes.
-
-OTIMIZAÇÃO V6 PARA RENDER GRATUITO
-CHART_DPI=72
-MAX_TRADE_IMAGES_PER_SCAN=2
-SCAN_TOP_N=20
-OHLCV_LIMIT=260
-
-Na V6, alertas RSI são só texto. Imagens mantidas em Possível setup / Entrada e no histórico.
-Reduzir DPI diminui tamanho e picos de RAM na renderização; não garante ficar abaixo da quota do Render.
+Mantenha as variáveis de ambiente da V6. Nenhuma variável nova obrigatória.
+Não apague manualmente ficheiros sent_alerts.json/trades_history.json se quiser conservar a memória de alertas/trades entre scans.
+O Render gratuito usa disco efémero; alertas podem reaparecer depois de novo deploy/restart se esses ficheiros desaparecerem.

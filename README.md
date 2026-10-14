@@ -1,55 +1,27 @@
-DEPLOY RENDER GRATUITO — V5
+# Scanner V7 — correção de duplicados
 
-GitHub: coloca todos os ficheiros da V5 na raiz do repositório, com nomes originais.
+Corrige o registo e os alertas repetidos do mesmo breakout, como o caso INJ/USDT 4h com a mesma entrada e stops ligeiramente diferentes.
 
-BUILD COMMAND:
-pip install -r requirements.txt
+## Alterações
 
-START COMMAND:
-python start.py
+- Identidade do sinal de rompimento passa a usar a vela do rompimento, não o preço flutuante da resistência.
+- Matching semântico da zona: mesma exchange/mercado, par, timeframe, rompimento com diferença de até uma vela e níveis no máximo 1,2% diferentes. Setups temporalmente distintos continuam independentes.
+- Apenas um alerta **Possível setup** e um **Entrada** por oportunidade, não dois de cada.
+- O histórico antigo é deduplicado automaticamente quando o scanner arranca. Conserva a primeira sugestão de SL/TP; se uma das linhas duplicadas já estiver fechada, conserva o resultado final.
+- IDs de alertas da V6 são interpretados para evitar reenvios na migração, desde que os ficheiros JSON locais ainda existam.
+- Critérios RSI, OI, geração de gráficos leve e monitorização de trades da V6 foram mantidos.
 
-VARIÁVEIS PRINCIPAIS:
-EXCHANGE_ID=mexc
-MARKET_TYPE=spot
-TIMEFRAMES=15m,30m,1h,4h,1d
-SCAN_TOP_N=35
-SCAN_INTERVAL_SECONDS=300
-OHLCV_LIMIT=320
-OI_MODE=confirm_if_available
-OI_SOURCE_EXCHANGE=binance
-OI_MIN_DROP_PCT=2.0
-MIN_PRICE_DIFFERENCE_PCT=0.006
-MIN_PRICE_DELTA_ATR=0.60
-MIN_RSI_DIFFERENCE=3.0
-TELEGRAM_BOT_TOKEN=<o teu token novo e secreto>
-TELEGRAM_CHAT_ID=<id da tua conta Telegram>
+## Render
 
-EXEMPLO ZEC PERPETUAL FUTURES DA MEXC:
-MARKET_TYPE=swap
-EXTRA_SYMBOLS=ZECUSDT
+Build: `pip install -r requirements.txt`  
+Start: `python start.py`
 
-NOTAS:
-* Em spot não existe OI: histórico da Binance de contratos futuros é uma fonte externa independente.
-* OI incompleto é exibido como INDISPONÍVEL, nunca uma falsa confirmação.
-* Gráficos de trades e win rate guardados em disco LOCAL desaparecem em reinícios/deploys Render Free.
-* Ler README.md para detalhes, critérios e testes.
+Substituir todos os ficheiros da V6 pelos do pacote V7 no mesmo diretório do GitHub. Mantém as mesmas Environment Variables.
 
-OTIMIZAÇÃO V6 PARA RENDER GRATUITO
-CHART_DPI=72
-MAX_TRADE_IMAGES_PER_SCAN=2
-SCAN_TOP_N=20
-OHLCV_LIMIT=260
+## Aviso sobre o Render gratuito
 
-Na V6, alertas RSI são só texto. Imagens mantidas em Possível setup / Entrada e no histórico.
-Reduzir DPI diminui tamanho e picos de RAM na renderização; não garante ficar abaixo da quota do Render.
+`trades_history.json`, `sent_alerts.json` e `alert_history.json` são ficheiros locais efémeros. Um **deploy** pode repor o sistema de ficheiros e apagar o estado anterior. Se isto acontecer, nenhuma solução baseada apenas nesses ficheiros pode garantir deduplicação entre deploys. Para garantia total sem pagar pela base de dados é preciso uma persistência externa (por exemplo, escrever um ledger através da API de outro serviço ou separar o scanner e guardar snapshots num repositório privado com credencial restrita). Não coloques tokens num repositório público.
 
+## Testes
 
-## V6 — uso de memória no plano gratuito
-- Alertas RSI **apenas texto**. Breakouts e entradas mantêm imagem de menor resolução.
-- Gráficos renderizados com **78 dpi** por defeito (alterável via `CHART_DPI=72`) e 9×5,2 polegadas.
-- Não se guardam DataFrames de todos os pares: apenas trades em curso e entradas novas.
-- Para gerar imagem de novo breakout, os candles são obtidos só para alertas ainda não enviados.
-- No máximo 2 imagens históricas geradas em cada scan (`MAX_TRADE_IMAGES_PER_SCAN=2`).
-- Para começar no Render gratuito: `SCAN_TOP_N=20`, `OHLCV_LIMIT=260`; reduzir `SCAN_TOP_N` controla volume de pedidos, não necessariamente o pico máximo de RAM.
-- O Render Web e o scanner continuam em processos distintos. A utilização total de memória inclui Streamlit, Matplotlib, numpy/pandas, dependências e ambos os processos. Não há garantia de ausência de OOM.
-- Ficheiros JSON e imagens não persistem após um redeploy/restart do sistema de ficheiros efémero do Render.
+`python test_v5.py` e `python test_dedup_v7.py`
