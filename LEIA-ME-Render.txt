@@ -1,22 +1,35 @@
-BUILD COMMAND
+DEPLOY RENDER GRATUITO — V5
+
+GitHub: coloca todos os ficheiros da V5 na raiz do repositório, com nomes originais.
+
+BUILD COMMAND:
 pip install -r requirements.txt
 
-START COMMAND
+START COMMAND:
 python start.py
 
-VARIÁVEIS DE AMBIENTE RECOMENDADAS
+VARIÁVEIS PRINCIPAIS:
 EXCHANGE_ID=mexc
-SCAN_INTERVAL_SECONDS=300
-SCAN_TOP_N=35
+MARKET_TYPE=spot
 TIMEFRAMES=15m,30m,1h,4h,1d
+SCAN_TOP_N=35
+SCAN_INTERVAL_SECONDS=300
 OHLCV_LIMIT=320
-TELEGRAM_BOT_TOKEN=coloca_o_teu_token_novo
-TELEGRAM_CHAT_ID=coloca_o_teu_chat_id
-EXTRA_SYMBOLS=AEROUSDT,MARSCOINUSDT
+OI_MODE=confirm_if_available
+OI_SOURCE_EXCHANGE=binance
+OI_MIN_DROP_PCT=2.0
+MIN_PRICE_DIFFERENCE_PCT=0.006
+MIN_PRICE_DELTA_ATR=0.60
+MIN_RSI_DIFFERENCE=3.0
+TELEGRAM_BOT_TOKEN=<o teu token novo e secreto>
+TELEGRAM_CHAT_ID=<id da tua conta Telegram>
 
-NOTAS IMPORTANTES
-- Os timeframes 2h, 6h e 12h foram removidos por completo.
-- Divergências RSI de 2 pivots só contam em 4h e 1d.
-- Nos restantes timeframes, a divergência precisa de 3 ou mais pivots.
-- O alerta "Possível setup" e o alerta "Entrada" incluem imagem no Telegram.
-- O separador "Trades & win rate" usa um ficheiro local JSON; se o serviço Render reiniciar, esse histórico pode ser perdido.
+EXEMPLO ZEC PERPETUAL FUTURES DA MEXC:
+MARKET_TYPE=swap
+EXTRA_SYMBOLS=ZECUSDT
+
+NOTAS:
+* Em spot não existe OI: histórico da Binance de contratos futuros é uma fonte externa independente.
+* OI incompleto é exibido como INDISPONÍVEL, nunca uma falsa confirmação.
+* Gráficos de trades e win rate guardados em disco LOCAL desaparecem em reinícios/deploys Render Free.
+* Ler README.md para detalhes, critérios e testes.
